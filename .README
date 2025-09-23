@@ -1,6 +1,6 @@
-export TESS_PREFIX=$(brew --prefix tesseract)
-export LEPT_PREFIX=$(brew --prefix leptonica)
-export DYLD_LIBRARY_PATH="$TESS_PREFIX/lib:$LEPT_PREFIX/lib:$DYLD_LIBRARY_PATH"
-export JNA_LIBRARY_PATH="$DYLD_LIBRARY_PATH"
-export TESSDATA_PREFIX="$TESS_PREFIX/share/tessdata"
-mvn spring-boot:run
+export PROJECT_ROOT=/Users/path2/content-management-forms-api
+export TESS_PREFIX="$PROJECT_ROOT/src/main/resources/darwin-aarch64"
+export LEPT_PREFIX="$PROJECT_ROOT/src/main/resources/darwin-aarch64"
+export DYLD_LIBRARY_PATH="$TESS_PREFIX:${DYLD_LIBRARY_PATH}"
+export JNA_LIBRARY_PATH="$TESS_PREFIX"
+export TESSDATA_PREFIX="$PROJECT_ROOT/src/main/resources/tessdata"
