@@ -1,0 +1,42 @@
+{
+  "groups": [
+    {
+      "name": "form.processing",
+      "type": "com.contentmanagement.forms.api.config.FormProcessingProperties",
+      "sourceType": "com.contentmanagement.forms.api.config.FormProcessingProperties"
+    }
+  ],
+  "properties": [
+    {
+      "name": "form.processing.base-unit",
+      "type": "java.lang.String",
+      "sourceType": "com.contentmanagement.forms.api.config.FormProcessingProperties"
+    },
+    {
+      "name": "form.processing.default-mode",
+      "type": "com.contentmanagement.forms.api.model.ProcessingMode",
+      "sourceType": "com.contentmanagement.forms.api.config.FormProcessingProperties"
+    },
+    {
+      "name": "form.processing.fallback-image-resources",
+      "type": "java.util.List<java.lang.String>",
+      "sourceType": "com.contentmanagement.forms.api.config.FormProcessingProperties"
+    },
+    {
+      "name": "form.processing.ocr-enabled",
+      "type": "java.lang.Boolean",
+      "sourceType": "com.contentmanagement.forms.api.config.FormProcessingProperties"
+    },
+    {
+      "name": "form.processing.ocr-language",
+      "type": "java.lang.String",
+      "sourceType": "com.contentmanagement.forms.api.config.FormProcessingProperties"
+    },
+    {
+      "name": "form.processing.tess-data-path",
+      "type": "java.lang.String",
+      "sourceType": "com.contentmanagement.forms.api.config.FormProcessingProperties"
+    }
+  ],
+  "hints": []
+}

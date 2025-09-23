@@ -1,0 +1,593 @@
+{
+  "meta": {
+    "schemaVersion": "2.0",
+    "title": "Report of 24duz Hazard Insurance Loss (Form 178)",
+    "publisher": "23du",
+    "edition": "02/2020",
+    "baseUnit": "pt",
+    "pageSize": { "w": 612, "h": 792 },
+    "pages": 2
+  },
+  "pages": [
+    {
+      "index": 0,
+      "flowOrder": [
+        "hdr.logo",
+        "hdr.submission.new", "hdr.submission.newLabel",
+        "hdr.submission.supp", "hdr.submission.suppLabel",
+        "hdr.submission.suppNoLabel", "hdr.submission.suppNo",
+        "title.heading", "title.directions",
+        "prop.row1.pn.label", "prop.row1.pn.field", "prop.row1.ln.label", "prop.row1.ln.field",
+        "prop.row2.addr.label", "prop.row2.addr.field",
+        "prop.row3.city.label", "prop.row3.city.field",
+        "prop.row3.state.label", "prop.row3.state.field",
+        "prop.row3.zip.label", "prop.row3.zip.field",
+        "prop.desc.label", "prop.desc.field",
+        "timeline.c1.label", "timeline.c1.field",
+        "timeline.c2.label", "timeline.c2.field",
+        "timeline.c3.label", "timeline.c3.field",
+        "timeline.c4.label", "timeline.c4.field",
+        "financial.c1.label", "financial.c1.field",
+        "financial.c2.label", "financial.c2.field",
+        "financial.c3.label", "financial.c3.field",
+        "financial.c4.label", "financial.c4.field",
+        "narrative.p1", "narrative.p2", "narrative.p3", "narrative.note",
+        "matrix.instructions", "matrix.table",
+        "footer.left", "footer.right"
+      ],
+      "root": {
+        "id": "root-1",
+        "type": "group",
+        "role": "page",
+        "layout": { "kind": "stack", "axis": "y", "gap": 12, "align": "stretch" },
+        "children": ["hdr", "title", "prop", "timeline", "financial", "narrative", "matrix", "footer"]
+      },
+      "nodes": [
+        {
+          "id": "hdr",
+          "type": "group",
+          "role": "header",
+          "layout": { "kind": "row", "gap": 8, "justify": "space-between", "align": "start" },
+          "children": ["hdr.logo", "hdr.submission"],
+          "geom": { "bbox": { "x": 36, "y": 24, "w": 540, "h": 60 } }
+        },
+        {
+          "id": "hdr.logo",
+          "type": "text",
+          "role": "header",
+          "text": "23du",
+          "style": { "fontFamily": "Times New Roman", "fontSize": 18, "weight": "bold" },
+          "geom": { "bbox": { "x": 36, "y": 24, "w": 160, "h": 24 } }
+        },
+        {
+          "id": "hdr.submission",
+          "type": "group",
+          "role": "section",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2, "align": "end" },
+          "children": [
+            "hdr.submission.row1",
+            "hdr.submission.row2"
+          ]
+        },
+        {
+          "id": "hdr.submission.row1",
+          "type": "group",
+          "layout": { "kind": "row", "gap": 6, "align": "center" },
+          "children": ["hdr.submission.new", "hdr.submission.newLabel", "hdr.submission.supp", "hdr.submission.suppLabel"]
+        },
+        {
+          "id": "hdr.submission.row2",
+          "type": "group",
+          "layout": { "kind": "row", "gap": 6, "align": "center" },
+          "children": ["hdr.submission.suppNoLabel", "hdr.submission.suppNo"]
+        },
+        { "id": "hdr.submission.new", "type": "field", "widget": { "type": "checkbox", "name": "isNewSubmission" } },
+        { "id": "hdr.submission.newLabel", "type": "text", "role": "label", "text": "New Submission", "associations": { "labelFor": "hdr.submission.new" } },
+        { "id": "hdr.submission.supp", "type": "field", "widget": { "type": "checkbox", "name": "isSupplemental" } },
+        { "id": "hdr.submission.suppLabel", "type": "text", "role": "label", "text": "Supplemental Submission", "associations": { "labelFor": "hdr.submission.supp" } },
+        { "id": "hdr.submission.suppNoLabel", "type": "text", "role": "label", "text": "Supplemental Submission No.", "associations": { "labelFor": "hdr.submission.suppNo" } },
+        { "id": "hdr.submission.suppNo", "type": "field", "widget": { "type": "select", "name": "supplementalNo", "options": ["1","2","3","4","5"] } },
+
+        {
+          "id": "title",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "children": ["title.heading", "title.directions"]
+        },
+        {
+          "id": "title.heading",
+          "type": "text",
+          "role": "heading",
+          "text": "Report of 24duz Hazard Insurance Loss",
+          "style": { "fontFamily": "Georgia", "fontSize": 22, "weight": "bold" },
+          "geom": { "bbox": { "x": 36, "y": 102, "w": 540, "h": 30 } }
+        },
+        {
+          "id": "title.directions",
+          "type": "text",
+          "role": "paragraph",
+          "text": "Directions: The Servicer must notify 24duz Asset Management when a casualty loss occurs. The Servicer must submit the Report of 24duz Hazard Insurance Loss (Form 178) to 23du within 30 days after a casualty unless there was serious injury or death. If serious injury or death has occurred, submit Form 178 within 10 days of the occurrence.",
+          "style": { "fontSize": 11, "color": "#374151" },
+          "geom": { "bbox": { "x": 36, "y": 140, "w": 540, "h": 52 } }
+        },
+
+        {
+          "id": "prop",
+          "type": "group",
+          "role": "fieldset",
+          "legend": "Property Information",
+          "styleDefaults": { "label": { "fontSize": 10, "weight": "bold" } },
+          "layout": { "kind": "stack", "axis": "y", "gap": 8 },
+          "children": ["prop.row1", "prop.row2", "prop.row3", "prop.desc"]
+        },
+        {
+          "id": "prop.row1",
+          "type": "group",
+          "layout": { "kind": "row", "gap": 12, "align": "end" },
+          "constraints": [{ "type": "equal-widths", "targets": ["prop.row1.pn", "prop.row1.ln"] }],
+          "children": ["prop.row1.pn", "prop.row1.ln"]
+        },
+        {
+          "id": "prop.row1.pn",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["prop.row1.pn.label", "prop.row1.pn.field"]
+        },
+        { "id": "prop.row1.pn.label", "type": "text", "role": "label", "text": "Property Name", "associations": { "labelFor": "prop.row1.pn.field" } },
+        { "id": "prop.row1.pn.field", "type": "field", "widget": { "type": "text", "name": "propertyName", "required": true } },
+        {
+          "id": "prop.row1.ln",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["prop.row1.ln.label", "prop.row1.ln.field"]
+        },
+        { "id": "prop.row1.ln.label", "type": "text", "role": "label", "text": "23du Loan Number", "associations": { "labelFor": "prop.row1.ln.field" } },
+        { "id": "prop.row1.ln.field", "type": "field", "widget": { "type": "text", "name": "loanNumber" } },
+
+        {
+          "id": "prop.row2",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["prop.row2.addr.label", "prop.row2.addr.field"]
+        },
+        { "id": "prop.row2.addr.label", "type": "text", "role": "label", "text": "Property Address", "associations": { "labelFor": "prop.row2.addr.field" } },
+        { "id": "prop.row2.addr.field", "type": "field", "widget": { "type": "text", "name": "propertyAddress" } },
+
+        {
+          "id": "prop.row3",
+          "type": "group",
+          "layout": { "kind": "row", "gap": 12, "align": "end" },
+          "children": ["prop.row3.city", "prop.row3.state", "prop.row3.zip"]
+        },
+        {
+          "id": "prop.row3.city",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["prop.row3.city.label", "prop.row3.city.field"]
+        },
+        { "id": "prop.row3.city.label", "type": "text", "role": "label", "text": "City", "associations": { "labelFor": "prop.row3.city.field" } },
+        { "id": "prop.row3.city.field", "type": "field", "widget": { "type": "text", "name": "city" } },
+        {
+          "id": "prop.row3.state",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["prop.row3.state.label", "prop.row3.state.field"]
+        },
+        { "id": "prop.row3.state.label", "type": "text", "role": "label", "text": "State", "associations": { "labelFor": "prop.row3.state.field" } },
+        { "id": "prop.row3.state.field", "type": "field", "widget": { "type": "select", "name": "state", "options": ["AL","AK","AZ","CA","CO","CT","DC","FL","GA","IL","MA","MD","NC","NJ","NY","OH","OR","PA","TX","VA","WA"] } },
+        {
+          "id": "prop.row3.zip",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["prop.row3.zip.label", "prop.row3.zip.field"]
+        },
+        { "id": "prop.row3.zip.label", "type": "text", "role": "label", "text": "Zip Code", "associations": { "labelFor": "prop.row3.zip.field" } },
+        { "id": "prop.row3.zip.field", "type": "field", "widget": { "type": "text", "name": "zip" } },
+
+        {
+          "id": "prop.desc",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["prop.desc.label", "prop.desc.field"]
+        },
+        { "id": "prop.desc.label", "type": "text", "role": "label", "text": "Description of Loss (attach additional pages if necessary)", "associations": { "labelFor": "prop.desc.field" } },
+        { "id": "prop.desc.field", "type": "field", "widget": { "type": "textarea", "name": "lossDescription" } },
+
+        {
+          "id": "timeline",
+          "type": "group",
+          "legend": "Repair/Restoration Timeline",
+          "role": "fieldset",
+          "layout": { "kind": "row", "gap": 12, "align": "end" },
+          "constraints": [{ "type": "column-ratios", "ratios": [1, 1.3, 1, 0.8] }],
+          "children": ["timeline.c1", "timeline.c2", "timeline.c3", "timeline.c4"]
+        },
+        {
+          "id": "timeline.c1",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["timeline.c1.label", "timeline.c1.field"]
+        },
+        { "id": "timeline.c1.label", "type": "text", "role": "label", "text": "Date of Loss", "associations": { "labelFor": "timeline.c1.field" } },
+        { "id": "timeline.c1.field", "type": "field", "widget": { "type": "date", "name": "dateOfLoss" } },
+
+        {
+          "id": "timeline.c2",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["timeline.c2.label", "timeline.c2.field"]
+        },
+        { "id": "timeline.c2.label", "type": "text", "role": "label", "text": "Projected Repair/Restoration Completion Date", "associations": { "labelFor": "timeline.c2.field" } },
+        { "id": "timeline.c2.field", "type": "field", "widget": { "type": "date", "name": "projectedCompletionDate" } },
+
+        {
+          "id": "timeline.c3",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["timeline.c3.label", "timeline.c3.field"]
+        },
+        { "id": "timeline.c3.label", "type": "text", "role": "label", "text": "Projected Days to Completion", "associations": { "labelFor": "timeline.c3.field" } },
+        { "id": "timeline.c3.field", "type": "field", "widget": { "type": "text", "name": "projectedDays" } },
+
+        {
+          "id": "timeline.c4",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["timeline.c4.label", "timeline.c4.field"]
+        },
+        { "id": "timeline.c4.label", "type": "text", "role": "label", "text": "Percentage of Repair/Restoration Completed to Date", "associations": { "labelFor": "timeline.c4.field" } },
+        { "id": "timeline.c4.field", "type": "field", "widget": { "type": "text", "name": "percentComplete" } },
+
+        {
+          "id": "financial",
+          "type": "group",
+          "legend": "Financials",
+          "role": "fieldset",
+          "layout": { "kind": "row", "gap": 12, "align": "end" },
+          "constraints": [{ "type": "column-ratios", "ratios": [1, 1.2, 1.4, 0.9] }],
+          "children": ["financial.c1", "financial.c2", "financial.c3", "financial.c4"]
+        },
+        {
+          "id": "financial.c1",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["financial.c1.label", "financial.c1.field"]
+        },
+        { "id": "financial.c1.label", "type": "text", "role": "label", "text": "Amount of Loss Draft", "associations": { "labelFor": "financial.c1.field" } },
+        { "id": "financial.c1.field", "type": "field", "widget": { "type": "text", "name": "amountLossDraft" } },
+
+        {
+          "id": "financial.c2",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["financial.c2.label", "financial.c2.field"]
+        },
+        { "id": "financial.c2.label", "type": "text", "role": "label", "text": "Total Amount of Loss", "associations": { "labelFor": "financial.c2.field" } },
+        { "id": "financial.c2.field", "type": "field", "widget": { "type": "text", "name": "totalLossAmount" } },
+
+        {
+          "id": "financial.c3",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["financial.c3.label", "financial.c3.field"]
+        },
+        { "id": "financial.c3.label", "type": "text", "role": "label", "text": "Amount of Previous Loss Drafts (if any)", "associations": { "labelFor": "financial.c3.field" } },
+        { "id": "financial.c3.field", "type": "field", "widget": { "type": "text", "name": "previousLossDrafts" } },
+
+        {
+          "id": "financial.c4",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 2 },
+          "children": ["financial.c4.label", "financial.c4.field"]
+        },
+        { "id": "financial.c4.label", "type": "text", "role": "label", "text": "Difference Between Total Loss and Total Loss Drafts", "associations": { "labelFor": "financial.c4.field" } },
+        { "id": "financial.c4.field", "type": "field", "widget": { "type": "text", "name": "differenceTotalLoss" } },
+
+        {
+          "id": "narrative",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "children": ["narrative.p1", "narrative.p2", "narrative.p3", "narrative.note"]
+        },
+        {
+          "id": "narrative.p1",
+          "type": "paragraph",
+          "runs": [
+            { "text": "On " },
+            { "fieldRef": "narrative.p1.date" },
+            { "text": ", we were notified of the above loss sustained by the Property securing the above Mortgage Loan." }
+          ]
+        },
+        { "id": "narrative.p1.date", "type": "field", "widget": { "type": "text", "name": "lossNoticeDate" } },
+        {
+          "id": "narrative.p2",
+          "type": "paragraph",
+          "runs": [
+            { "text": "We have received a loss draft in the amount of " },
+            { "fieldRef": "narrative.p2.amount" },
+            { "text": " in connection with the settlement of the loss." }
+          ]
+        },
+        { "id": "narrative.p2.amount", "type": "field", "widget": { "type": "text", "name": "settlementAmount" } },
+        {
+          "id": "narrative.p3",
+          "type": "paragraph",
+          "runs": [
+            { "text": "The loss draft " },
+            { "fieldRef": "narrative.p3.choice" },
+            { "text": " been endorsed by the Servicer." }
+          ]
+        },
+        {
+          "id": "narrative.p3.choice",
+          "type": "field",
+          "widget": { "type": "radio", "name": "lossDraftEndorsed", "options": [ { "value": "has", "label": "has" }, { "value": "has-not", "label": "has not" } ] }
+        },
+        {
+          "id": "narrative.note",
+          "type": "text",
+          "role": "helper",
+          "text": "Note: Submission of the insurance loss draft or check for 23du endorsement by the Servicer is prohibited per the Servicer’s Contract with 23du."
+        },
+
+        {
+          "id": "matrix",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "children": ["matrix.instructions", "matrix.table"]
+        },
+        {
+          "id": "matrix.instructions",
+          "type": "text",
+          "role": "paragraph",
+          "text": "Select “YES” or “NO” for each of the following statements. For any “NO” answer, provide an explanation in Comments. If sufficient information is not available, select “NAV” and re-submit when available."
+        },
+        {
+          "id": "matrix.table",
+          "type": "table",
+          "columns": [
+            { "key": "nav", "header": "NAV", "width": 40 },
+            { "key": "yes", "header": "YES", "width": 40 },
+            { "key": "no",  "header": "NO",  "width": 40 },
+            { "key": "statement", "header": null, "width": "*" }
+          ],
+          "rows": [
+            { "id": "s1", "statement": "There is no payment default or performance default under the Note or Security Instrument.", "field": { "type": "radio", "name": "stmt1", "options": ["nav","yes","no"] } },
+            { "id": "s2", "statement": "Total funds available from insurance proceeds (combined with other funds the Borrower will escrow) are sufficient to fully repair the Property.", "field": { "type": "radio", "name": "stmt2", "options": ["nav","yes","no"] } },
+            { "id": "s3", "statement": "The Property, as repaired, should be capable of generating enough income to cover operating expenses, reserve requirements, and debt service.", "field": { "type": "radio", "name": "stmt3", "options": ["nav","yes","no"] } },
+            { "id": "s4", "statement": "There are no zoning or land use restrictions that would preclude rebuilding/restoration to pre-casualty condition and characteristics.", "field": { "type": "radio", "name": "stmt4", "options": ["nav","yes","no"] } },
+            { "id": "s5", "statement": "Restoration and repair can be completed by the earlier of one year from the date of loss or the Note maturity date.", "field": { "type": "radio", "name": "stmt5", "options": ["nav","yes","no"] } },
+            { "id": "s6", "statement": "Servicer has inspected the Property since being notified of the loss. (Attach 834sdf and photos for any “YES”.)", "field": { "type": "radio", "name": "stmt6", "options": ["nav","yes","no"] } },
+            { "id": "s7", "statement": "The attached loss draft is the first loss draft in connection with this loss.", "field": { "type": "radio", "name": "stmt7", "options": ["nav","yes","no"] } },
+            { "id": "s8", "statement": "There was no loss of life or serious injury requiring hospitalization due to the casualty loss.", "field": { "type": "radio", "name": "stmt8", "options": ["nav","yes","no"] } },
+            { "id": "s9", "statement": "Servicer has made a timely recommendation to add 23du as loss payee on the insurance policy and loss draft check.", "field": { "type": "radio", "name": "stmt9", "options": ["nav","yes","no"] } }
+          ],
+          "constraints": [{ "type": "align-baseline", "targets": ["nav","yes","no"] }]
+        },
+
+        {
+          "id": "footer",
+          "type": "group",
+          "role": "footer",
+          "layout": { "kind": "row", "justify": "space-between" },
+          "children": ["footer.left", "footer.right"]
+        },
+        { "id": "footer.left", "type": "text", "role": "footer", "text": "Form 178  (02/2020)  23du" },
+        { "id": "footer.right", "type": "text", "role": "footer", "text": "Page 1 of 2" }
+      ]
+    },
+
+    {
+      "index": 1,
+      "flowOrder": [
+        "comments.label","comments.field",
+        "recs.legend","recs.items.r1.box","recs.items.r1.text",
+        "recs.items.r2.box","recs.items.r2.text",
+        "recs.items.r3.box","recs.items.r3.text",
+        "other.label","other.field",
+        "sig.panelLeft.name.label","sig.panelLeft.name.field",
+        "sig.panelLeft.addr.label","sig.panelLeft.addr.field",
+        "sig.panelLeft.city.label","sig.panelLeft.city.field",
+        "sig.panelLeft.state.label","sig.panelLeft.state.field",
+        "sig.panelLeft.zip.label","sig.panelLeft.zip.field",
+        "sig.panelLeft.servicerNo.label","sig.panelLeft.servicerNo.field",
+        "sig.panelMid.phone.label","sig.panelMid.phone.field",
+        "sig.panelMid.email.label","sig.panelMid.email.field",
+        "sig.panelMid.by.label","sig.panelMid.by.field",
+        "sig.panelMid.signer.label","sig.panelMid.signer.field",
+        "sig.panelRight.legend",
+        "sig.panelRight.by.label","sig.panelRight.by.field",
+        "sig.panelRight.name.label","sig.panelRight.name.field",
+        "sig.panelRight.title.label","sig.panelRight.title.field",
+        "sig.panelRight.date.label","sig.panelRight.date.field",
+        "sig.panelRight.approved", "sig.panelRight.approvedLabel",
+        "sig.panelRight.rejected", "sig.panelRight.rejectedLabel",
+        "footer2.left","footer2.right"
+      ],
+      "root": {
+        "id": "root-2",
+        "type": "group",
+        "role": "page",
+        "layout": { "kind": "stack", "axis": "y", "gap": 12, "align": "stretch" },
+        "children": ["comments", "recs", "other", "sig", "footer2"]
+      },
+      "nodes": [
+        {
+          "id": "comments",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "children": ["comments.label", "comments.field"]
+        },
+        { "id": "comments.label", "type": "text", "role": "label", "text": "Comments", "associations": { "labelFor": "comments.field" } },
+        { "id": "comments.field", "type": "field", "widget": { "type": "textarea", "name": "comments" }, "geom": { "bbox": { "x": 36, "y": 56, "w": 540, "h": 196 } } },
+
+        {
+          "id": "recs",
+          "type": "group",
+          "role": "fieldset",
+          "legend": "Recommendation (check applicable)",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "children": ["recs.items"]
+        },
+        {
+          "id": "recs.items",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "repeat": { "min": 1 },
+          "children": ["recs.items.r1", "recs.items.r2", "recs.items.r3"]
+        },
+        {
+          "id": "recs.items.r1",
+          "type": "group",
+          "layout": { "kind": "row", "gap": 8, "align": "start" },
+          "children": ["recs.items.r1.box", "recs.items.r1.text"]
+        },
+        { "id": "recs.items.r1.box", "type": "field", "widget": { "type": "checkbox", "name": "recAuthorizeRepair" } },
+        { "id": "recs.items.r1.text", "type": "text", "role": "paragraph", "text": "The Borrower should be authorized to repair the damages sustained by the Property. Servicer will hold the loss draft proceeds—and any difference between the estimated cost of repair/restoration and the loss draft proceeds—in a custodial account that meets 23du requirements, and will disburse such funds to the Borrower to cover the cost of restoration or repair." },
+
+        {
+          "id": "recs.items.r2",
+          "type": "group",
+          "layout": { "kind": "row", "gap": 8, "align": "start" },
+          "children": ["recs.items.r2.box", "recs.items.r2.text"]
+        },
+        { "id": "recs.items.r2.box", "type": "field", "widget": { "type": "checkbox", "name": "recWorkCompleted" } },
+        { "id": "recs.items.r2.text", "type": "text", "role": "paragraph", "text": "100% of the repair/restoration work has been completed to our satisfaction. The loss draft proceeds should be disbursed to the Borrower." },
+
+        {
+          "id": "recs.items.r3",
+          "type": "group",
+          "layout": { "kind": "row", "gap": 8, "align": "start" },
+          "children": ["recs.items.r3.box", "recs.items.r3.text"]
+        },
+        { "id": "recs.items.r3.box", "type": "field", "widget": { "type": "checkbox", "name": "recApplyToUPB" } },
+        { "id": "recs.items.r3.text", "type": "text", "role": "paragraph", "text": "The loss draft proceeds should be applied to reduce the unpaid principal balance of the Mortgage Loan. (Explain if this recommendation is checked.)" },
+
+        {
+          "id": "other",
+          "type": "group",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "children": ["other.label", "other.field"]
+        },
+        { "id": "other.label", "type": "text", "role": "label", "text": "Other recommendations: (Explain in detail, by attachment if necessary.)", "associations": { "labelFor": "other.field" } },
+        { "id": "other.field", "type": "field", "widget": { "type": "textarea", "name": "otherRecommendations" } },
+
+        {
+          "id": "sig",
+          "type": "group",
+          "layout": { "kind": "row", "gap": 12, "align": "start" },
+          "constraints": [{ "type": "column-ratios", "ratios": [2, 2, 2] }],
+          "children": ["sig.panelLeft", "sig.panelMid", "sig.panelRight"]
+        },
+
+        {
+          "id": "sig.panelLeft",
+          "type": "group",
+          "legend": "Servicer Information",
+          "role": "fieldset",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "children": [
+            "sig.panelLeft.name", "sig.panelLeft.addr",
+            "sig.panelLeft.city", "sig.panelLeft.state", "sig.panelLeft.zip",
+            "sig.panelLeft.servicerNo"
+          ]
+        },
+        { "id": "sig.panelLeft.name", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelLeft.name.label","sig.panelLeft.name.field"] },
+        { "id": "sig.panelLeft.name.label", "type": "text", "role": "label", "text": "Servicer's Name", "associations": { "labelFor": "sig.panelLeft.name.field" } },
+        { "id": "sig.panelLeft.name.field", "type": "field", "widget": { "type": "text", "name": "servicerName" } },
+
+        { "id": "sig.panelLeft.addr", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelLeft.addr.label","sig.panelLeft.addr.field"] },
+        { "id": "sig.panelLeft.addr.label", "type": "text", "role": "label", "text": "Address", "associations": { "labelFor": "sig.panelLeft.addr.field" } },
+        { "id": "sig.panelLeft.addr.field", "type": "field", "widget": { "type": "text", "name": "servicerAddress" } },
+
+        { "id": "sig.panelLeft.city", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelLeft.city.label","sig.panelLeft.city.field"] },
+        { "id": "sig.panelLeft.city.label", "type": "text", "role": "label", "text": "City", "associations": { "labelFor": "sig.panelLeft.city.field" } },
+        { "id": "sig.panelLeft.city.field", "type": "field", "widget": { "type": "text", "name": "servicerCity" } },
+
+        { "id": "sig.panelLeft.state", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelLeft.state.label","sig.panelLeft.state.field"] },
+        { "id": "sig.panelLeft.state.label", "type": "text", "role": "label", "text": "State", "associations": { "labelFor": "sig.panelLeft.state.field" } },
+        { "id": "sig.panelLeft.state.field", "type": "field", "widget": { "type": "select", "name": "servicerState", "options": ["AL","AK","AZ","CA","CO","CT","DC","FL","GA","IL","MA","MD","NC","NJ","NY","OH","OR","PA","TX","VA","WA"] } },
+
+        { "id": "sig.panelLeft.zip", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelLeft.zip.label","sig.panelLeft.zip.field"] },
+        { "id": "sig.panelLeft.zip.label", "type": "text", "role": "label", "text": "Zip Code", "associations": { "labelFor": "sig.panelLeft.zip.field" } },
+        { "id": "sig.panelLeft.zip.field", "type": "field", "widget": { "type": "text", "name": "servicerZip" } },
+
+        { "id": "sig.panelLeft.servicerNo", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelLeft.servicerNo.label","sig.panelLeft.servicerNo.field"] },
+        { "id": "sig.panelLeft.servicerNo.label", "type": "text", "role": "label", "text": "Servicer Number", "associations": { "labelFor": "sig.panelLeft.servicerNo.field" } },
+        { "id": "sig.panelLeft.servicerNo.field", "type": "field", "widget": { "type": "text", "name": "servicerNumber" } },
+
+        {
+          "id": "sig.panelMid",
+          "type": "group",
+          "legend": "Servicer Contact",
+          "role": "fieldset",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "children": ["sig.panelMid.phone", "sig.panelMid.email", "sig.panelMid.by", "sig.panelMid.signer"]
+        },
+        { "id": "sig.panelMid.phone", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelMid.phone.label","sig.panelMid.phone.field"] },
+        { "id": "sig.panelMid.phone.label", "type": "text", "role": "label", "text": "Telephone No.", "associations": { "labelFor": "sig.panelMid.phone.field" } },
+        { "id": "sig.panelMid.phone.field", "type": "field", "widget": { "type": "text", "name": "servicerPhone" } },
+
+        { "id": "sig.panelMid.email", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelMid.email.label","sig.panelMid.email.field"] },
+        { "id": "sig.panelMid.email.label", "type": "text", "role": "label", "text": "Email Address", "associations": { "labelFor": "sig.panelMid.email.field" } },
+        { "id": "sig.panelMid.email.field", "type": "field", "widget": { "type": "text", "name": "servicerEmail" } },
+
+        { "id": "sig.panelMid.by", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelMid.by.label","sig.panelMid.by.field"] },
+        { "id": "sig.panelMid.by.label", "type": "text", "role": "label", "text": "By", "associations": { "labelFor": "sig.panelMid.by.field" } },
+        { "id": "sig.panelMid.by.field", "type": "field", "widget": { "type": "text", "name": "servicerBy" } },
+
+        { "id": "sig.panelMid.signer", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelMid.signer.label","sig.panelMid.signer.field"] },
+        { "id": "sig.panelMid.signer.label", "type": "text", "role": "label", "text": "Name", "associations": { "labelFor": "sig.panelMid.signer.field" } },
+        { "id": "sig.panelMid.signer.field", "type": "field", "widget": { "type": "text", "name": "servicerSignerName" } },
+
+        {
+          "id": "sig.panelRight",
+          "type": "group",
+          "legend": "23du Use Only",
+          "role": "fieldset",
+          "layout": { "kind": "stack", "axis": "y", "gap": 6 },
+          "children": [
+            "sig.panelRight.by", "sig.panelRight.name", "sig.panelRight.title", "sig.panelRight.date",
+            "sig.panelRight.rowDecision"
+          ]
+        },
+        { "id": "sig.panelRight.by", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelRight.by.label","sig.panelRight.by.field"] },
+        { "id": "sig.panelRight.by.label", "type": "text", "role": "label", "text": "By", "associations": { "labelFor": "sig.panelRight.by.field" } },
+        { "id": "sig.panelRight.by.field", "type": "field", "widget": { "type": "text", "name": "fmBy" } },
+
+        { "id": "sig.panelRight.name", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelRight.name.label","sig.panelRight.name.field"] },
+        { "id": "sig.panelRight.name.label", "type": "text", "role": "label", "text": "Name", "associations": { "labelFor": "sig.panelRight.name.field" } },
+        { "id": "sig.panelRight.name.field", "type": "field", "widget": { "type": "text", "name": "fmName" } },
+
+        { "id": "sig.panelRight.title", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelRight.title.label","sig.panelRight.title.field"] },
+        { "id": "sig.panelRight.title.label", "type": "text", "role": "label", "text": "Title", "associations": { "labelFor": "sig.panelRight.title.field" } },
+        { "id": "sig.panelRight.title.field", "type": "field", "widget": { "type": "text", "name": "fmTitle" } },
+
+        { "id": "sig.panelRight.date", "type": "group", "layout": { "kind": "stack", "axis": "y", "gap": 2 }, "children": ["sig.panelRight.date.label","sig.panelRight.date.field"] },
+        { "id": "sig.panelRight.date.label", "type": "text", "role": "label", "text": "Date", "associations": { "labelFor": "sig.panelRight.date.field" } },
+        { "id": "sig.panelRight.date.field", "type": "field", "widget": { "type": "date", "name": "fmDate" } },
+
+        {
+          "id": "sig.panelRight.rowDecision",
+          "type": "group",
+          "layout": { "kind": "row", "gap": 12, "align": "center" },
+          "children": ["sig.panelRight.approved", "sig.panelRight.approvedLabel", "sig.panelRight.rejected", "sig.panelRight.rejectedLabel"]
+        },
+        { "id": "sig.panelRight.approved", "type": "field", "widget": { "type": "checkbox", "name": "fmApproved" } },
+        { "id": "sig.panelRight.approvedLabel", "type": "text", "role": "label", "text": "Approved", "associations": { "labelFor": "sig.panelRight.approved" } },
+        { "id": "sig.panelRight.rejected", "type": "field", "widget": { "type": "checkbox", "name": "fmRejected" } },
+        { "id": "sig.panelRight.rejectedLabel", "type": "text", "role": "label", "text": "Rejected", "associations": { "labelFor": "sig.panelRight.rejected" } },
+
+        {
+          "id": "footer2",
+          "type": "group",
+          "role": "footer",
+          "layout": { "kind": "row", "justify": "space-between" },
+          "children": ["footer2.left", "footer2.right"]
+        },
+        { "id": "footer2.left", "type": "text", "role": "footer", "text": "Form 178  (02/2020)  23du" },
+        { "id": "footer2.right", "type": "text", "role": "footer", "text": "Page 2 of 2" }
+      ]
+    }
+  ]
+}

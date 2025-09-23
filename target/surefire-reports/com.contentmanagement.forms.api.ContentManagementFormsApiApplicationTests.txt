@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.contentmanagement.forms.api.ContentManagementFormsApiApplicationTests
+-------------------------------------------------------------------------------
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.056 s -- in com.contentmanagement.forms.api.ContentManagementFormsApiApplicationTests
