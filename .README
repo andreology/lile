@@ -4,3 +4,4 @@ export LEPT_PREFIX="$PROJECT_ROOT/src/main/resources/darwin-aarch64"
 export DYLD_LIBRARY_PATH="$TESS_PREFIX:${DYLD_LIBRARY_PATH}"
 export JNA_LIBRARY_PATH="$TESS_PREFIX"
 export TESSDATA_PREFIX="$PROJECT_ROOT/src/main/resources/tessdata"
+-Djna.library.path=$TESS_PREFIX/lib:$LEPT_PREFIX/lib -DTESSDATA_PREFIX=$TESS_PREFIX/share/tessdata
