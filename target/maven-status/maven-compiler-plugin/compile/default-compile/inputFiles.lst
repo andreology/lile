@@ -25,6 +25,7 @@
 /Users/andrev/Documents/2025/content-management-forms-api/src/main/java/com/contentmanagement/forms/api/service/extraction/FormExtractionStrategy.java
 /Users/andrev/Documents/2025/content-management-forms-api/src/main/java/com/contentmanagement/forms/api/service/PdfProcessingService.java
 /Users/andrev/Documents/2025/content-management-forms-api/src/main/java/com/contentmanagement/forms/api/service/extraction/OpenCvLayoutAnalyzer.java
+/Users/andrev/Documents/2025/content-management-forms-api/src/main/java/com/contentmanagement/forms/api/service/extraction/NativeTesseractBootstrap.java
 /Users/andrev/Documents/2025/content-management-forms-api/src/main/java/com/contentmanagement/forms/api/ContentManagementFormsApiApplication.java
 /Users/andrev/Documents/2025/content-management-forms-api/src/main/java/com/contentmanagement/forms/api/model/BoundingBox.java
 /Users/andrev/Documents/2025/content-management-forms-api/src/main/java/com/contentmanagement/forms/api/model/LayoutJustify.java

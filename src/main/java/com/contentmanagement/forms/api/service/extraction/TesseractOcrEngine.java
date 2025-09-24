@@ -68,6 +68,7 @@ public class TesseractOcrEngine {
     }
 
     private ITesseract createConfiguredInstance() {
+        NativeTesseractBootstrap.ensureLoaded();
         Path tessDataDir = resolveTessDataPath();
         Tesseract tesseract = new Tesseract();
         tesseract.setDatapath(tessDataDir.toAbsolutePath().toString());
