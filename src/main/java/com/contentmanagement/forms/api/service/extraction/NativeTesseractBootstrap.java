@@ -4,8 +4,8 @@ import java.io.File;
 import java.io.IOException;
 
 import org.bytedeco.javacpp.Loader;
-import org.bytedeco.leptonica.global.lept;
-import org.bytedeco.tesseract.global.tesseract;
+import org.bytedeco.leptonica.presets.leptonica;
+import org.bytedeco.tesseract.presets.tesseract;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,7 +28,7 @@ final class NativeTesseractBootstrap {
                 return;
             }
             try {
-                File leptLibrary = new File(Loader.load(lept.class));
+                File leptLibrary = new File(Loader.load(leptonica.class));
                 File tessLibrary = new File(Loader.load(tesseract.class));
 
                 registerNativeDirectory(leptLibrary.getParentFile());
