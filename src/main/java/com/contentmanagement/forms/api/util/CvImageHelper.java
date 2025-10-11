@@ -5,10 +5,16 @@ import java.io.File;
 import java.text.DecimalFormat;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.beans.property.DoubleProperty;
+import javafx.beans.property.SimpleDoubleProperty;
 import javafx.beans.value.ChangeListener;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -23,11 +29,13 @@ import javafx.scene.control.SpinnerValueFactory;
 import javafx.scene.control.TitledPane;
 import javafx.scene.image.Image;
 import javafx.scene.image.ImageView;
+import javafx.scene.input.ScrollEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
@@ -42,9 +50,10 @@ import org.opencv.core.Scalar;
 import org.opencv.core.Size;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
+import org.opencv.photo.Photo;
 
 /**
- * JavaFX helper to experiment with OpenCV parameters on top of a {@link Mat} image.
+ * JavaFX helper to experiment with OpenCV parameters on a {@link Mat} image.
  */
 public class CvImageHelper extends Application {
 
@@ -56,7 +65,7 @@ public class CvImageHelper extends Application {
         try {
             System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
         } catch (UnsatisfiedLinkError ignore) {
-            // assume already loaded
+            // assume already loaded elsewhere
         }
     }
 
@@ -70,7 +79,14 @@ public class CvImageHelper extends Application {
             new Thread(() -> Application.launch(CvImageHelper.class)).start();
         } else {
             Platform.runLater(() -> {
-                if (currentInstance != null) {
+                if (currentInstance == null) {
+                    try {
+                        CvImageHelper helper = new CvImageHelper();
+                        helper.start(new Stage());
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    }
+                } else {
                     currentInstance.replaceImage(sharedSourceMat.clone());
                 }
             });
@@ -88,6 +104,15 @@ public class CvImageHelper extends Application {
         launch(args);
     }
 
+    private final ExecutorService processingExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "cv-image-helper-processor");
+        t.setDaemon(true);
+        return t;
+    });
+    private final AtomicReference<Future<?>> activeTask = new AtomicReference<>();
+
+    private final DoubleProperty originalZoom = new SimpleDoubleProperty(1.0);
+    private final DoubleProperty processedZoom = new SimpleDoubleProperty(1.0);
     private final DecimalFormat decimalFormat = new DecimalFormat("0.##");
 
     private Stage primaryStage;
@@ -105,6 +130,10 @@ public class CvImageHelper extends Application {
     private Slider underlineLengthSlider;
     private Slider underlineThicknessSlider;
     private Slider contourMinAreaSlider;
+    private Slider bilateralDiameterSlider;
+    private Slider bilateralSigmaColorSlider;
+    private Slider bilateralSigmaSpaceSlider;
+    private Slider textRemovalMinAreaSlider;
     private Spinner<Integer> inpaintSpinner;
 
     private CheckBox adaptiveCheck;
@@ -115,8 +144,12 @@ public class CvImageHelper extends Application {
     private CheckBox morphOpenCheck;
     private CheckBox morphCloseCheck;
     private CheckBox showContoursCheck;
+    private CheckBox equalizeHistCheck;
+    private CheckBox bilateralCheck;
+    private CheckBox removeTextCheck;
 
     private Label contourInfoLabel;
+    private Label zoomLabel;
 
     private Mat sourceMat;
 
@@ -132,8 +165,8 @@ public class CvImageHelper extends Application {
             throw new IllegalStateException("No image available for processing – supply a Mat or choose a file.");
         }
 
-        originalView = createImageView();
-        processedView = createImageView();
+        originalView = createImageView(originalZoom);
+        processedView = createImageView(processedZoom);
 
         BorderPane root = new BorderPane();
         root.setPadding(new Insets(10));
@@ -143,18 +176,34 @@ public class CvImageHelper extends Application {
         updateImageView(originalView, sourceMat);
         applyProcessing();
 
-        Scene scene = new Scene(root, 1550, 820);
+        Scene scene = new Scene(root, 1600, 860);
         stage.setTitle("OpenCV Image Helper");
         stage.setScene(scene);
         stage.show();
+        stage.setOnCloseRequest(evt -> currentInstance = null);
+    }
+
+    @Override
+    public void stop() {
+        Future<?> task = activeTask.getAndSet(null);
+        if (task != null) {
+            task.cancel(true);
+        }
+        processingExecutor.shutdownNow();
+        currentInstance = null;
     }
 
     private void replaceImage(Mat mat) {
         if (mat == null || mat.empty()) {
             return;
         }
-        this.sourceMat = mat;
+        if (sourceMat != null) {
+            sourceMat.release();
+        }
+        sourceMat = mat;
         sharedSourceMat = mat.clone();
+        originalZoom.set(1.0);
+        processedZoom.set(1.0);
         updateImageView(originalView, sourceMat);
         applyProcessing();
         if (primaryStage != null && !primaryStage.isShowing()) {
@@ -179,7 +228,11 @@ public class CvImageHelper extends Application {
     }
 
     private ScrollPane createImagePane() {
-        HBox hBox = new HBox(10, wrapWithTitledPane("Original", originalView), wrapWithTitledPane("Processed", processedView));
+        HBox hBox = new HBox(
+                10,
+                wrapWithTitledPane("Original", originalView, originalZoom),
+                wrapWithTitledPane("Processed", processedView, processedZoom)
+        );
         hBox.setAlignment(Pos.CENTER);
         ScrollPane scrollPane = new ScrollPane(hBox);
         scrollPane.setFitToWidth(true);
@@ -188,37 +241,48 @@ public class CvImageHelper extends Application {
         return scrollPane;
     }
 
-    private TitledPane wrapWithTitledPane(String title, ImageView imageView) {
-        BorderPane pane = new BorderPane(imageView);
-        pane.setPrefSize(720, 720);
-        TitledPane titledPane = new TitledPane(title, pane);
+    private TitledPane wrapWithTitledPane(String title, ImageView imageView, DoubleProperty zoomProperty) {
+        StackPane content = new StackPane(imageView);
+        content.setAlignment(Pos.CENTER);
+        content.setPadding(new Insets(10));
+
+        content.addEventFilter(ScrollEvent.SCROLL, event -> {
+            double delta = event.getDeltaY() > 0 ? 0.1 : -0.1;
+            double newZoom = clamp(zoomProperty.get() + delta, 0.25, 6.0);
+            zoomProperty.set(newZoom);
+            event.consume();
+        });
+        content.setOnMouseClicked(evt -> {
+            if (evt.getClickCount() == 2) {
+                zoomProperty.set(1.0);
+            }
+        });
+
+        TitledPane titledPane = new TitledPane(title, content);
         titledPane.setCollapsible(false);
         return titledPane;
     }
 
-    private ImageView createImageView() {
+    private ImageView createImageView(DoubleProperty zoomProperty) {
         ImageView view = new ImageView();
         view.setPreserveRatio(true);
         view.setSmooth(true);
-        view.setFitWidth(720);
-        view.setFitHeight(720);
+        view.scaleXProperty().bind(zoomProperty);
+        view.scaleYProperty().bind(zoomProperty);
         return view;
     }
 
     private VBox createControlPane() {
-        VBox container = new VBox(10);
+        VBox container = new VBox(12);
         container.setPadding(new Insets(10));
-        container.setPrefWidth(360);
+        container.setPrefWidth(380);
 
         Button loadButton = new Button("Load Image...");
         loadButton.setMaxWidth(Double.MAX_VALUE);
         loadButton.setOnAction(evt -> {
             Mat loaded = requestImageFromUser(primaryStage);
             if (loaded != null && !loaded.empty()) {
-                sourceMat = loaded;
-                sharedSourceMat = loaded.clone();
-                updateImageView(originalView, sourceMat);
-                applyProcessing();
+                replaceImage(loaded);
             }
         });
 
@@ -226,9 +290,7 @@ public class CvImageHelper extends Application {
         resetButton.setMaxWidth(Double.MAX_VALUE);
         resetButton.setOnAction(evt -> {
             if (sharedSourceMat != null && !sharedSourceMat.empty()) {
-                sourceMat = sharedSourceMat.clone();
-                updateImageView(originalView, sourceMat);
-                applyProcessing();
+                replaceImage(sharedSourceMat.clone());
             }
         });
 
@@ -252,6 +314,11 @@ public class CvImageHelper extends Application {
         erodeIterationsSlider = createSlider(sliders, row++, "Erode iter", 0, 10, 0, true);
         contourMinAreaSlider = createSlider(sliders, row++, "Contour min area", 10, 5000, 400, true);
 
+        bilateralDiameterSlider = createSlider(sliders, row++, "Bilateral diameter", 3, 15, 7, true);
+        bilateralSigmaColorSlider = createSlider(sliders, row++, "Bilateral sigmaColor", 10, 150, 75, false);
+        bilateralSigmaSpaceSlider = createSlider(sliders, row++, "Bilateral sigmaSpace", 10, 150, 75, false);
+        textRemovalMinAreaSlider = createSlider(sliders, row++, "Text min area", 10, 3000, 250, true);
+
         inpaintSpinner = new Spinner<>();
         inpaintSpinner.setValueFactory(new SpinnerValueFactory.IntegerSpinnerValueFactory(0, 15, 3));
         inpaintSpinner.valueProperty().addListener((obs, oldV, newV) -> applyProcessing());
@@ -264,7 +331,10 @@ public class CvImageHelper extends Application {
         toggles.setPadding(new Insets(5));
         adaptiveCheck = createToggle("Use adaptive threshold", true, toggles);
         invertCheck = createToggle("Invert result", true, toggles);
+        equalizeHistCheck = createToggle("Histogram equalize", false, toggles);
+        bilateralCheck = createToggle("Apply bilateral filter", false, toggles);
         removeUnderlineCheck = createToggle("Remove horizontal underlines", true, toggles);
+        removeTextCheck = createToggle("Remove text regions", false, toggles);
         dilateCheck = createToggle("Apply dilation", true, toggles);
         erodeCheck = createToggle("Apply erosion", false, toggles);
         morphOpenCheck = createToggle("Morph open", false, toggles);
@@ -272,6 +342,22 @@ public class CvImageHelper extends Application {
         showContoursCheck = createToggle("Draw contours", true, toggles);
 
         container.getChildren().add(new TitledPane("Toggles", toggles));
+
+        zoomLabel = new Label("1.0x");
+        Slider zoomSlider = new Slider(0.25, 4.0, 1.0);
+        zoomSlider.setBlockIncrement(0.1);
+        zoomSlider.valueProperty().addListener((obs, oldV, newV) -> {
+            double zoom = newV.doubleValue();
+            originalZoom.set(zoom);
+            processedZoom.set(zoom);
+            zoomLabel.setText(decimalFormat.format(zoom) + "x");
+        });
+        Button resetZoom = new Button("Reset zoom");
+        resetZoom.setOnAction(evt -> zoomSlider.setValue(1.0));
+
+        VBox zoomBox = new VBox(6, zoomLabel, zoomSlider, resetZoom);
+        zoomBox.setPadding(new Insets(5));
+        container.getChildren().add(new TitledPane("Zoom", zoomBox));
 
         contourInfoLabel = new Label("Contours: --");
         container.getChildren().addAll(createSeparator(), contourInfoLabel, createSpacer());
@@ -304,8 +390,9 @@ public class CvImageHelper extends Application {
 
         ChangeListener<Number> listener = (obs, oldVal, newVal) -> {
             if (whole) {
-                slider.setValue(Math.round(newVal.doubleValue()));
-                valueLabel.setText(Long.toString(Math.round(newVal.doubleValue())));
+                double rounded = Math.round(newVal.doubleValue());
+                slider.setValue(rounded);
+                valueLabel.setText(Long.toString(Math.round(rounded)));
             } else {
                 valueLabel.setText(decimalFormat.format(newVal.doubleValue()));
             }
@@ -332,13 +419,26 @@ public class CvImageHelper extends Application {
         if (sourceMat == null || sourceMat.empty()) {
             return;
         }
-        Mat processed = process(sourceMat.clone());
-        updateImageView(processedView, processed);
-        processed.release();
+        Mat clone = sourceMat.clone();
+        Future<?> previous = activeTask.getAndSet(processingExecutor.submit(() -> {
+            try {
+                ProcessingResult result = process(clone);
+                Image processedImage = matToImage(result.outputMat);
+                result.outputMat.release();
+                Platform.runLater(() -> {
+                    processedView.setImage(processedImage);
+                    contourInfoLabel.setText(result.summary);
+                });
+            } finally {
+                clone.release();
+            }
+        }));
+        if (previous != null) {
+            previous.cancel(true);
+        }
     }
 
-    private Mat process(Mat input) {
-        Mat working = input.clone();
+    private ProcessingResult process(Mat working) {
         Mat gray = new Mat();
         if (working.channels() > 1) {
             Imgproc.cvtColor(working, gray, Imgproc.COLOR_BGR2GRAY);
@@ -346,12 +446,24 @@ public class CvImageHelper extends Application {
             gray = working.clone();
         }
 
-        int blurKernel = (int) blurSlider.getValue();
-        if (blurKernel % 2 == 0) {
-            blurKernel++;
+        if (equalizeHistCheck.isSelected()) {
+            Imgproc.equalizeHist(gray, gray);
         }
-        if (blurKernel > 1) {
-            Imgproc.GaussianBlur(gray, gray, new Size(blurKernel, blurKernel), 0);
+
+        if (bilateralCheck.isSelected()) {
+            Imgproc.bilateralFilter(gray,
+                    gray,
+                    (int) Math.max(1, bilateralDiameterSlider.getValue()),
+                    bilateralSigmaColorSlider.getValue(),
+                    bilateralSigmaSpaceSlider.getValue());
+        } else {
+            int blurKernel = (int) blurSlider.getValue();
+            if (blurKernel % 2 == 0) {
+                blurKernel++;
+            }
+            if (blurKernel > 1) {
+                Imgproc.GaussianBlur(gray, gray, new Size(blurKernel, blurKernel), 0);
+            }
         }
 
         Mat binary = new Mat();
@@ -363,22 +475,27 @@ public class CvImageHelper extends Application {
             blockSize = Math.max(3, blockSize);
             double c = cOffsetSlider.getValue();
             Imgproc.adaptiveThreshold(gray, binary, 255, Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
-                    Imgproc.THRESH_BINARY_INV, blockSize, c);
+                    invertCheck.isSelected() ? Imgproc.THRESH_BINARY_INV : Imgproc.THRESH_BINARY,
+                    blockSize, c);
         } else {
             double thresh = globalThresholdSlider.getValue();
             int mode = invertCheck.isSelected() ? Imgproc.THRESH_BINARY_INV : Imgproc.THRESH_BINARY;
             Imgproc.threshold(gray, binary, thresh, 255, mode);
         }
 
-        if (invertCheck.isSelected() && adaptiveCheck.isSelected()) {
-            Core.bitwise_not(binary, binary);
-        }
-
         if (removeUnderlineCheck.isSelected()) {
-            binary = removeHorizontalArtifacts(binary,
+            Mat cleaned = removeHorizontalArtifacts(binary,
                     (int) underlineLengthSlider.getValue(),
                     (int) underlineThicknessSlider.getValue(),
                     inpaintSpinner.getValue());
+            binary.release();
+            binary = cleaned;
+        }
+
+        if (removeTextCheck.isSelected()) {
+            Mat textCleared = removeTextRegions(binary, textRemovalMinAreaSlider.getValue());
+            binary.release();
+            binary = textCleared;
         }
 
         Size kernelSize = new Size(Math.max(1, (int) dilateKernelXSlider.getValue()),
@@ -401,41 +518,65 @@ public class CvImageHelper extends Application {
         Mat display = new Mat();
         Imgproc.cvtColor(binary, display, Imgproc.COLOR_GRAY2BGR);
 
+        String summary;
         if (showContoursCheck.isSelected()) {
-            drawContours(binary, display, contourMinAreaSlider.getValue());
+            int count = drawContours(binary, display, contourMinAreaSlider.getValue());
+            summary = "Contours: " + count + " (min area " + decimalFormat.format(contourMinAreaSlider.getValue()) + ")";
+        } else {
+            summary = "Contours disabled";
         }
 
         gray.release();
         binary.release();
-        return display;
+        kernel.release();
+
+        return new ProcessingResult(display, summary);
     }
 
     private Mat removeHorizontalArtifacts(Mat binary, int length, int thickness, int inpaintRadius) {
-        Mat working = binary.clone();
         Mat horizontalKernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT,
                 new Size(Math.max(1, length), Math.max(1, thickness)));
         Mat detectedLines = new Mat();
-        Imgproc.morphologyEx(working, detectedLines, Imgproc.MORPH_OPEN, horizontalKernel);
+        Imgproc.morphologyEx(binary, detectedLines, Imgproc.MORPH_OPEN, horizontalKernel);
 
         Mat cleaned = new Mat();
-        Core.subtract(working, detectedLines, cleaned);
+        Core.subtract(binary, detectedLines, cleaned);
 
         if (inpaintRadius > 0) {
             Mat mask = new Mat();
             Imgproc.threshold(detectedLines, mask, 0, 255, Imgproc.THRESH_BINARY);
-            Imgproc.inpaint(cleaned, mask, cleaned, inpaintRadius, Imgproc.INPAINT_NS);
+            Photo.inpaint(cleaned, mask, cleaned, inpaintRadius, Photo.INPAINT_NS);
             mask.release();
         }
 
         detectedLines.release();
-        working.release();
+        horizontalKernel.release();
         return cleaned;
     }
 
-    private void drawContours(Mat binary, Mat display, double minArea) {
+   private Mat removeTextRegions(Mat binary, double minArea) {
+        Mat result = binary.clone();
+        Mat contourInput = binary.clone();
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        Imgproc.findContours(binary.clone(), contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        Imgproc.findContours(contourInput, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        for (MatOfPoint contour : contours) {
+            double area = Imgproc.contourArea(contour);
+            if (area >= minArea) {
+                Imgproc.drawContours(result, List.of(contour), -1, new Scalar(0), -1);
+            }
+            contour.release();
+        }
+        contourInput.release();
+        hierarchy.release();
+        return result;
+    }
+
+    private int drawContours(Mat binary, Mat display, double minArea) {
+        Mat contourInput = binary.clone();
+        List<MatOfPoint> contours = new ArrayList<>();
+        Mat hierarchy = new Mat();
+        Imgproc.findContours(contourInput, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
         int count = 0;
         for (MatOfPoint contour : contours) {
             double area = Imgproc.contourArea(contour);
@@ -446,8 +587,9 @@ public class CvImageHelper extends Application {
             }
             contour.release();
         }
+        contourInput.release();
         hierarchy.release();
-        contourInfoLabel.setText("Contours: " + count + " (min area " + decimalFormat.format(minArea) + ")");
+        return count;
     }
 
     private void updateImageView(ImageView view, Mat mat) {
@@ -458,6 +600,22 @@ public class CvImageHelper extends Application {
     private Image matToImage(Mat mat) {
         MatOfByte buffer = new MatOfByte();
         Imgcodecs.imencode(".png", mat, buffer);
-        return new Image(new ByteArrayInputStream(buffer.toArray()));
+        Image img = new Image(new ByteArrayInputStream(buffer.toArray()));
+        buffer.release();
+        return img;
+    }
+
+    private double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    private static final class ProcessingResult {
+        private final Mat outputMat;
+        private final String summary;
+
+        private ProcessingResult(Mat outputMat, String summary) {
+            this.outputMat = outputMat;
+            this.summary = summary;
+        }
     }
 }
