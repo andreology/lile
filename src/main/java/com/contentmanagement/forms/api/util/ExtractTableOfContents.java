@@ -70,7 +70,7 @@ public final class ExtractTableOfContents {
         rows.add(headers);
         for (RowRecord record : records) {
             rows.add(new String[]{
-                record.isIncluded() ? "✔" : "", 
+                record.isIncluded() ? "✔" : "",
                 record.getTab(),
                 record.getDocument(),
                 record.getFormNumber(),
@@ -79,28 +79,67 @@ public final class ExtractTableOfContents {
                 record.isSectionRow() ? "S" : ""
             });
         }
+
         int[] widths = new int[headers.length];
         for (String[] row : rows) {
             for (int i = 0; i < row.length; i++) {
-                widths[i] = Math.max(widths[i], row[i] == null ? 0 : row[i].length());
+                widths[i] = Math.max(widths[i], measureMaxWidth(row[i]));
             }
         }
+
         String border = buildBorder(widths);
         System.out.println(border);
         for (int i = 0; i < rows.size(); i++) {
             String[] row = rows.get(i);
-            StringBuilder line = new StringBuilder();
-            line.append("|");
-            for (int c = 0; c < row.length; c++) {
-                String cell = row[c] == null ? "" : row[c];
-                line.append(" ").append(pad(cell, widths[c])).append(" |");
+            List<String[]> wrapped = wrapRow(row, widths);
+            for (int lineIndex = 0; lineIndex < wrapped.size(); lineIndex++) {
+                String[] line = wrapped.get(lineIndex);
+                StringBuilder out = new StringBuilder("|");
+                for (int col = 0; col < line.length; col++) {
+                    out.append(" ").append(pad(line[col], widths[col])).append(" |");
+                }
+                System.out.println(out);
             }
-            System.out.println(line);
+            System.out.println(border);
             if (i == 0) {
-                System.out.println(border);
+                // already printed border after header
             }
         }
-        System.out.println(border);
+    }
+
+    private static int measureMaxWidth(String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        int width = 0;
+        for (String line : text.split("\\R")) {
+            width = Math.max(width, line.length());
+        }
+        return width;
+    }
+
+    private static List<String[]> wrapRow(String[] row, int[] widths) {
+        List<String[]> lines = new ArrayList<>();
+        int maxLines = 0;
+        List<String[]> splitColumns = new ArrayList<>();
+        for (int i = 0; i < row.length; i++) {
+            String value = row[i] == null ? "" : row[i];
+            String[] split = value.split("\\R");
+            splitColumns.add(split);
+            maxLines = Math.max(maxLines, split.length);
+        }
+        for (int line = 0; line < maxLines; line++) {
+            String[] out = new String[row.length];
+            for (int col = 0; col < row.length; col++) {
+                String[] split = splitColumns.get(col);
+                out[col] = line < split.length ? split[line] : "";
+            }
+            lines.add(out);
+        }
+        if (lines.isEmpty()) {
+            lines.add(new String[row.length]);
+        }
+        return lines;
     }
 
     public static final class RowRecord {
