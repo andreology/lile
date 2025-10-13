@@ -6,12 +6,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-
+import java.util.stream.Collectors;
+import net.sourceforge.tess4j.Tesseract;
+import net.sourceforge.tess4j.TesseractException;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
@@ -19,19 +20,14 @@ import org.opencv.core.Rect;
 import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
-import net.sourceforge.tess4j.Tesseract;
-import net.sourceforge.tess4j.TesseractException;
-
 public final class ExtractTableOfContents {
 
-    private static final double CELL_CENTER_OFFSET = 0.6;
     private static final double EDGE_TOLERANCE_FACTOR = 0.35;
     private static final double MIN_EDGE_TOLERANCE = 3.0;
     private static final int OCR_MARGIN = 2;
     private static final double CHECKBOX_ASPECT_TOL = 0.35;
     private static final double CHECKBOX_MIN_AREA = 36.0;
     private static final double CHECKBOX_INK_RATIO = 0.08;
-    private static final double BAND_MARGIN_FACTOR = 0.15;
 
     private final Tesseract OCREngine;
 
@@ -48,18 +44,63 @@ public final class ExtractTableOfContents {
         Objects.requireNonNull(contentMat, "contentMat");
         Objects.requireNonNull(contentContours, "contentContours");
 
-        List<Rect> cellRects = extractCellRects(cellContours);
-        if (cellRects.isEmpty()) {
+        TableGrid grid = TableGrid.fromContours(cellContours);
+        if (grid.rowCount == 0 || grid.colCount == 0) {
             return Collections.emptyList();
         }
 
-        GridModel grid = buildGridModel(cellRects);
-        CellGrid cellGrid = buildCellGrid(grid, cellRects);
-        List<RowSlice> rowSlices = createRowSlices(grid);
-        ContentModel content = assignContent(rowSlices, cellGrid, grid, contentMat, contentContours);
-        ColumnModel columnModel = inferColumns(grid);
-        defineCheckboxBands(content.checkboxes, grid);
-        return assembleRows(rowSlices, columnModel, grid, cellGrid, content);
+        Mat grayContent = toGray(contentMat);
+        assignContent(grid, contentMat, grayContent, contentContours);
+        grayContent.release();
+
+        propagateMergedCellText(grid, ColumnType.DOCUMENT);
+        propagateMergedCellText(grid, ColumnType.DELIVERY_REQUIREMENT);
+        propagateMergedCellText(grid, ColumnType.TAB);
+
+        return assembleRecords(grid);
+    }
+
+    public static void printRecordsAsTable(List<RowRecord> records) {
+        if (records == null || records.isEmpty()) {
+            System.out.println("(no rows)");
+            return;
+        }
+        String[] headers = {"Included", "Tab", "Document", "Form Number", "Delivery Requirement", "Header", "Section"};
+        List<String[]> rows = new ArrayList<>();
+        rows.add(headers);
+        for (RowRecord record : records) {
+            rows.add(new String[]{
+                record.isIncluded() ? "✔" : "", 
+                record.getTab(),
+                record.getDocument(),
+                record.getFormNumber(),
+                record.getDeliveryRequirement(),
+                record.isHeaderRow() ? "H" : "",
+                record.isSectionRow() ? "S" : ""
+            });
+        }
+        int[] widths = new int[headers.length];
+        for (String[] row : rows) {
+            for (int i = 0; i < row.length; i++) {
+                widths[i] = Math.max(widths[i], row[i] == null ? 0 : row[i].length());
+            }
+        }
+        String border = buildBorder(widths);
+        System.out.println(border);
+        for (int i = 0; i < rows.size(); i++) {
+            String[] row = rows.get(i);
+            StringBuilder line = new StringBuilder();
+            line.append("|");
+            for (int c = 0; c < row.length; c++) {
+                String cell = row[c] == null ? "" : row[c];
+                line.append(" ").append(pad(cell, widths[c])).append(" |");
+            }
+            System.out.println(line);
+            if (i == 0) {
+                System.out.println(border);
+            }
+        }
+        System.out.println(border);
     }
 
     public static final class RowRecord {
@@ -79,10 +120,10 @@ public final class ExtractTableOfContents {
                   boolean headerRow,
                   boolean sectionRow) {
             this.included = included;
-            this.tab = documentOrEmpty(tab);
-            this.document = documentOrEmpty(document);
-            this.formNumber = documentOrEmpty(formNumber);
-            this.deliveryRequirement = documentOrEmpty(deliveryRequirement);
+            this.tab = textOrEmpty(tab);
+            this.document = textOrEmpty(document);
+            this.formNumber = textOrEmpty(formNumber);
+            this.deliveryRequirement = textOrEmpty(deliveryRequirement);
             this.headerRow = headerRow;
             this.sectionRow = sectionRow;
         }
@@ -128,112 +169,187 @@ public final class ExtractTableOfContents {
                 '}';
         }
 
-        private static String documentOrEmpty(String text) {
+        private static String textOrEmpty(String text) {
             return text == null ? "" : text;
         }
     }
 
-    private static final class GridModel {
-        final double[] rowBoundaries;
-        final double[] colBoundaries;
-        final Rect tableBounds;
-        final double rowTolerance;
-        final double colTolerance;
-        final double medianRowHeight;
-        final int rowCount;
-        final int colCount;
-
-        GridModel(double[] rowBoundaries,
-                  double[] colBoundaries,
-                  Rect tableBounds,
-                  double rowTolerance,
-                  double colTolerance,
-                  double medianRowHeight) {
-            this.rowBoundaries = rowBoundaries;
-            this.colBoundaries = colBoundaries;
-            this.tableBounds = tableBounds;
-            this.rowTolerance = rowTolerance;
-            this.colTolerance = colTolerance;
-            this.medianRowHeight = medianRowHeight;
-            this.rowCount = Math.max(0, rowBoundaries.length - 1);
-            this.colCount = Math.max(0, colBoundaries.length - 1);
-        }
+    private enum ColumnType {
+        CHECK_INCLUDED,
+        TAB,
+        DOCUMENT,
+        FORM_NUMBER,
+        DELIVERY_REQUIREMENT
     }
 
-    private static final class CellGrid {
+    private static final class TableGrid {
+        final double[] rowEdges;
+        final double[] colEdges;
         final int rowCount;
         final int colCount;
+        final Rect bounds;
         final Cell[][] cellByRowCol;
-        final List<Cell> cells;
-        final boolean[] rowHasFullWidthCell;
+        final RowData[] rows;
 
-        CellGrid(int rowCount,
-                 int colCount,
-                 Cell[][] cellByRowCol,
-                 List<Cell> cells,
-                 boolean[] rowHasFullWidthCell) {
-            this.rowCount = rowCount;
-            this.colCount = colCount;
+        static TableGrid fromContours(List<MatOfPoint> cellContours) {
+            List<Rect> rects = new ArrayList<>();
+            for (MatOfPoint contour : cellContours) {
+                Rect rect = Imgproc.boundingRect(contour);
+                if (rect.width > 0 && rect.height > 0) {
+                    rects.add(rect);
+                }
+            }
+            if (rects.isEmpty()) {
+                return new TableGrid(new double[0], new double[0], new Rect(), new Cell[0][0], new RowData[0]);
+            }
+
+            double minX = Double.MAX_VALUE;
+            double minY = Double.MAX_VALUE;
+            double maxX = Double.MIN_VALUE;
+            double maxY = Double.MIN_VALUE;
+
+            double[] heights = new double[rects.size()];
+            double[] widths = new double[rects.size()];
+            List<Double> rowEdges = new ArrayList<>();
+            List<Double> colEdges = new ArrayList<>();
+
+            for (int i = 0; i < rects.size(); i++) {
+                Rect rect = rects.get(i);
+                heights[i] = rect.height;
+                widths[i] = rect.width;
+
+                double top = rect.y;
+                double bottom = rect.y + rect.height;
+                double left = rect.x;
+                double right = rect.x + rect.width;
+
+                rowEdges.add(top);
+                rowEdges.add(bottom);
+                colEdges.add(left);
+                colEdges.add(right);
+
+                minX = Math.min(minX, left);
+                minY = Math.min(minY, top);
+                maxX = Math.max(maxX, right);
+                maxY = Math.max(maxY, bottom);
+            }
+
+            double medianHeight = median(heights);
+            double medianWidth = median(widths);
+            double rowTolerance = Math.max(MIN_EDGE_TOLERANCE, medianHeight * EDGE_TOLERANCE_FACTOR);
+            double colTolerance = Math.max(MIN_EDGE_TOLERANCE, medianWidth * EDGE_TOLERANCE_FACTOR);
+
+            double[] rowBoundaries = clusterEdges(rowEdges, rowTolerance, minY, maxY);
+            double[] colBoundaries = clusterEdges(colEdges, colTolerance, minX, maxX);
+
+            Rect tableBounds = new Rect(
+                (int) Math.floor(minX),
+                (int) Math.floor(minY),
+                (int) Math.ceil(Math.max(1.0, maxX - minX)),
+                (int) Math.ceil(Math.max(1.0, maxY - minY))
+            );
+
+            int rowCount = Math.max(0, rowBoundaries.length - 1);
+            int colCount = Math.max(0, colBoundaries.length - 1);
+            Cell[][] matrix = new Cell[rowCount][colCount];
+
+            for (Rect rect : rects) {
+                int rowStart = locateInterval(rowBoundaries, rect.y + 1e-3);
+                int rowEnd = locateInterval(rowBoundaries, rect.y + rect.height - 1e-3);
+                int colStart = locateInterval(colBoundaries, rect.x + 1e-3);
+                int colEnd = locateInterval(colBoundaries, rect.x + rect.width - 1e-3);
+
+                Cell cell = new Cell(rect, rowStart, rowEnd, colStart, colEnd);
+                for (int r = rowStart; r <= rowEnd; r++) {
+                    for (int c = colStart; c <= colEnd; c++) {
+                        if (r >= 0 && r < rowCount && c >= 0 && c < colCount) {
+                            matrix[r][c] = cell;
+                        }
+                    }
+                }
+            }
+
+            RowData[] rows = new RowData[rowCount];
+            for (int r = 0; r < rowCount; r++) {
+                rows[r] = new RowData(r, colCount);
+            }
+
+            return new TableGrid(rowBoundaries, colBoundaries, tableBounds, matrix, rows);
+        }
+
+        private TableGrid(double[] rowEdges,
+                           double[] colEdges,
+                           Rect bounds,
+                           Cell[][] cellByRowCol,
+                           RowData[] rows) {
+            this.rowEdges = rowEdges;
+            this.colEdges = colEdges;
+            this.bounds = bounds;
             this.cellByRowCol = cellByRowCol;
-            this.cells = cells;
-            this.rowHasFullWidthCell = rowHasFullWidthCell;
+            this.rows = rows;
+            this.rowCount = rows.length;
+            this.colCount = colEdges.length > 0 ? colEdges.length - 1 : 0;
+        }
+
+        Cell cellAt(int row, int col) {
+            if (row < 0 || col < 0 || row >= rowCount || col >= colCount) {
+                return null;
+            }
+            return cellByRowCol[row][col];
         }
     }
 
     private static final class Cell {
-        int rowStart;
-        int rowEnd;
-        int colStart;
-        int colEnd;
-        Rect bounds;
-        final Map<Integer, List<TextFragment>> fragments = new HashMap<>();
+        final Rect bounds;
+        final int rowStart;
+        final int rowEnd;
+        final int colStart;
+        final int colEnd;
+        final List<TextFragment> fragments = new ArrayList<>();
+        final List<Rect> checkboxRects = new ArrayList<>();
 
-        void addFragment(int column, TextFragment fragment) {
-            if (column < 0) {
-                return;
-            }
-            fragments.computeIfAbsent(column, key -> new ArrayList<>()).add(fragment);
+        Cell(Rect bounds, int rowStart, int rowEnd, int colStart, int colEnd) {
+            this.bounds = bounds;
+            this.rowStart = Math.max(0, rowStart);
+            this.rowEnd = Math.max(this.rowStart, rowEnd);
+            this.colStart = Math.max(0, colStart);
+            this.colEnd = Math.max(this.colStart, colEnd);
         }
 
-        String getText(int column) {
-            return combineFragments(fragments.get(column));
+        void addFragment(TextFragment fragment) {
+            fragments.add(fragment);
+        }
+
+        void addCheckbox(Rect rect) {
+            checkboxRects.add(rect);
         }
     }
 
-    private static final class RowSlice {
+    private static final class RowData {
         final int index;
-        final int top;
-        final int bottom;
-        final Map<Integer, List<TextFragment>> fragments = new HashMap<>();
-        final List<CheckboxObservation> checkboxes = new ArrayList<>();
+        final String[] textByColumn;
+        boolean included;
+        boolean headerRow;
+        boolean sectionRow;
 
-        RowSlice(int index, int top, int bottom) {
+        RowData(int index, int columnCount) {
             this.index = index;
-            this.top = top;
-            this.bottom = bottom;
+            this.textByColumn = new String[columnCount];
         }
 
-        void addFragment(int column, TextFragment fragment) {
-            if (column < 0) {
-                return;
+        void set(ColumnType column, String value) {
+            int idx = column.ordinal();
+            if (idx >= 0 && idx < textByColumn.length) {
+                textByColumn[idx] = normalize(value);
             }
-            fragments.computeIfAbsent(column, key -> new ArrayList<>()).add(fragment);
         }
 
-        void addCheckbox(CheckboxObservation observation) {
-            checkboxes.add(observation);
-        }
-
-        boolean hasCheckbox() {
-            return !checkboxes.isEmpty();
-        }
-
-        List<CheckboxObservation> getCheckboxes() {
-            return checkboxes;
-        }
-
-        String getText(int column) {
-            return combineFragments(fragments.get(column));
+        String get(ColumnType column) {
+            int idx = column.ordinal();
+            if (idx < 0 || idx >= textByColumn.length) {
+                return "";
+            }
+            return textByColumn[idx] == null ? "" : textByColumn[idx];
         }
     }
 
@@ -243,448 +359,144 @@ public final class ExtractTableOfContents {
 
         TextFragment(Rect rect, String text) {
             this.rect = rect;
-            this.text = text == null ? "" : text;
+            this.text = normalize(text);
         }
     }
 
-    private static final class CheckboxObservation {
-        final Rect rect;
-        final boolean checked;
-
-        CheckboxObservation(Rect rect, boolean checked) {
-            this.rect = rect;
-            this.checked = checked;
-        }
-
-        double centerY() {
-            return rect.y + rect.height / 2.0;
-        }
-    }
-
-    private static final class CheckboxBand {
-        final RowSlice slice;
-        final CheckboxObservation observation;
-        double bandTop;
-        double bandBottom;
-
-        CheckboxBand(RowSlice slice, CheckboxObservation observation) {
-            this.slice = slice;
-            this.observation = observation;
-        }
-
-        double centerY() {
-            return observation.centerY();
-        }
-
-        boolean isChecked() {
-            return observation.checked;
-        }
-    }
-
-    private static final class ContentModel {
-        final List<List<TextFragment>> columnFragments;
-        final List<CheckboxBand> checkboxes;
-
-        ContentModel(List<List<TextFragment>> columnFragments, List<CheckboxBand> checkboxes) {
-            this.columnFragments = columnFragments;
-            this.checkboxes = checkboxes;
-        }
-    }
-
-    private static final class ColumnModel {
-        final ColumnType[] mapping;
-        final Map<ColumnType, Integer> indexByType;
-
-        ColumnModel(ColumnType[] mapping, Map<ColumnType, Integer> indexByType) {
-            this.mapping = mapping;
-            this.indexByType = indexByType;
-        }
-
-        Integer indexOf(ColumnType type) {
-            return indexByType.get(type);
-        }
-    }
-
-    private enum ColumnType {
-        CHECK_INCLUDED(false),
-        TAB(true),
-        DOCUMENT(true),
-        FORM_NUMBER(false),
-        DELIVERY_REQUIREMENT(true),
-        UNKNOWN(false);
-
-        private final boolean propagate;
-
-        ColumnType(boolean propagate) {
-            this.propagate = propagate;
-        }
-
-        boolean shouldPropagate() {
-            return propagate;
-        }
-    }
-
-    private static final class DataRow {
-        final CheckboxBand band;
-        final boolean included;
-        String tab;
-        String document;
-        String formNumber;
-        String deliveryRequirement;
-
-        DataRow(CheckboxBand band, boolean included) {
-            this.band = band;
-            this.included = included;
-        }
-
-        RowRecord toRecord() {
-            return new RowRecord(included, tab, document, formNumber, deliveryRequirement, false, false);
-        }
-
-        String getField(ColumnType type) {
-            switch (type) {
-                case TAB:
-                    return tab;
-                case DOCUMENT:
-                    return document;
-                case FORM_NUMBER:
-                    return formNumber;
-                case DELIVERY_REQUIREMENT:
-                    return deliveryRequirement;
-                default:
-                    return "";
-            }
-        }
-
-        void setField(ColumnType type, String value) {
-            String normalized = normalizeLines(value);
-            switch (type) {
-                case TAB:
-                    tab = normalized;
-                    break;
-                case DOCUMENT:
-                    document = normalized;
-                    break;
-                case FORM_NUMBER:
-                    formNumber = normalized;
-                    break;
-                case DELIVERY_REQUIREMENT:
-                    deliveryRequirement = normalized;
-                    break;
-                default:
-                    break;
-            }
-        }
-    }
-
-    private static List<Rect> extractCellRects(List<MatOfPoint> contours) {
-        List<Rect> rects = new ArrayList<>();
-        for (MatOfPoint contour : contours) {
-            Rect rect = Imgproc.boundingRect(contour);
-            if (rect.width > 0 && rect.height > 0) {
-                rects.add(rect);
-            }
-        }
-        return rects;
-    }
-
-    private static GridModel buildGridModel(List<Rect> cellRects) {
-        double minX = Double.MAX_VALUE;
-        double minY = Double.MAX_VALUE;
-        double maxX = Double.MIN_VALUE;
-        double maxY = Double.MIN_VALUE;
-
-        double[] heights = new double[cellRects.size()];
-        double[] widths = new double[cellRects.size()];
-        List<Double> rowEdges = new ArrayList<>();
-        List<Double> colEdges = new ArrayList<>();
-
-        for (int i = 0; i < cellRects.size(); i++) {
-            Rect rect = cellRects.get(i);
-            heights[i] = rect.height;
-            widths[i] = rect.width;
-
-            double top = rect.y;
-            double bottom = rect.y + rect.height;
-            double left = rect.x;
-            double right = rect.x + rect.width;
-
-            rowEdges.add(top);
-            rowEdges.add(bottom);
-            colEdges.add(left);
-            colEdges.add(right);
-
-            minX = Math.min(minX, left);
-            minY = Math.min(minY, top);
-            maxX = Math.max(maxX, right);
-            maxY = Math.max(maxY, bottom);
-        }
-
-        if (minX == Double.MAX_VALUE) {
-            minX = minY = 0;
-            maxX = maxY = 0;
-        }
-
-        double medianHeight = median(heights);
-        double medianWidth = median(widths);
-        double rowTolerance = Math.max(MIN_EDGE_TOLERANCE, medianHeight * EDGE_TOLERANCE_FACTOR);
-        double colTolerance = Math.max(MIN_EDGE_TOLERANCE, medianWidth * EDGE_TOLERANCE_FACTOR);
-
-        double[] rowBoundaries = clusterEdges(rowEdges, rowTolerance, minY, maxY);
-        double[] colBoundaries = clusterEdges(colEdges, colTolerance, minX, maxX);
-
-        if (rowBoundaries.length < 2) {
-            rowBoundaries = new double[]{minY, maxY > minY ? maxY : minY + Math.max(1.0, medianHeight)};
-        }
-        if (colBoundaries.length < 2) {
-            colBoundaries = new double[]{minX, maxX > minX ? maxX : minX + Math.max(1.0, medianWidth)};
-        }
-
-        double medianRowHeight = medianDifferences(rowBoundaries);
-
-        Rect bounds = new Rect(
-            (int) Math.floor(minX),
-            (int) Math.floor(minY),
-            (int) Math.ceil(Math.max(1.0, maxX - minX)),
-            (int) Math.ceil(Math.max(1.0, maxY - minY))
-        );
-
-        return new GridModel(rowBoundaries, colBoundaries, bounds, rowTolerance, colTolerance, medianRowHeight);
-    }
-
-    private static double[] clusterEdges(List<Double> values, double tolerance, double min, double max) {
-        if (values.isEmpty()) {
-            return new double[0];
-        }
-        values.sort(Double::compareTo);
-        List<Double> clusters = new ArrayList<>();
-        double clusterCenter = values.get(0);
-        double sum = values.get(0);
-        int count = 1;
-
-        for (int i = 1; i < values.size(); i++) {
-            double value = values.get(i);
-            if (Math.abs(value - clusterCenter) <= tolerance) {
-                sum += value;
-                count++;
-                clusterCenter = sum / count;
-            } else {
-                clusters.add(clusterCenter);
-                clusterCenter = value;
-                sum = value;
-                count = 1;
-            }
-        }
-        clusters.add(clusterCenter);
-
-        if (clusters.size() == 1) {
-            double[] fallback = new double[2];
-            fallback[0] = min;
-            fallback[1] = max > min ? max : min + 1.0;
-            return fallback;
-        }
-
-        clusters.set(0, min);
-        clusters.set(clusters.size() - 1, max);
-
-        double[] result = new double[clusters.size()];
-        for (int i = 0; i < clusters.size(); i++) {
-            result[i] = clusters.get(i);
-        }
-        return result;
-    }
-
-    private static double median(double[] values) {
-        if (values == null || values.length == 0) {
-            return 0;
-        }
-        double[] copy = Arrays.copyOf(values, values.length);
-        Arrays.sort(copy);
-        int mid = copy.length / 2;
-        if (copy.length % 2 == 0) {
-            return (copy[mid - 1] + copy[mid]) / 2.0;
-        }
-        return copy[mid];
-    }
-
-    private static double medianDifferences(double[] boundaries) {
-        if (boundaries.length < 2) {
-            return 0;
-        }
-        double[] diffs = new double[boundaries.length - 1];
-        for (int i = 0; i < diffs.length; i++) {
-            diffs[i] = Math.max(1.0, boundaries[i + 1] - boundaries[i]);
-        }
-        return median(diffs);
-    }
-
-    private static CellGrid buildCellGrid(GridModel grid, List<Rect> cellRects) {
-        int rowCount = grid.rowCount;
-        int colCount = grid.colCount;
-        Cell[][] matrix = new Cell[rowCount][colCount];
-        List<Cell> cells = new ArrayList<>();
-
-        for (Rect rect : cellRects) {
-            Cell cell = new Cell();
-            cell.bounds = new Rect(rect.x, rect.y, rect.width, rect.height);
-
-            cell.rowStart = clampIntervalIndex(locateInterval(grid.rowBoundaries, rect.y + CELL_CENTER_OFFSET, grid.rowTolerance), rowCount);
-            cell.rowEnd = clampIntervalIndex(locateInterval(grid.rowBoundaries, rect.y + rect.height - CELL_CENTER_OFFSET, grid.rowTolerance), rowCount);
-            if (cell.rowEnd < cell.rowStart) {
-                cell.rowEnd = cell.rowStart;
-            }
-
-            cell.colStart = clampIntervalIndex(locateInterval(grid.colBoundaries, rect.x + CELL_CENTER_OFFSET, grid.colTolerance), colCount);
-            cell.colEnd = clampIntervalIndex(locateInterval(grid.colBoundaries, rect.x + rect.width - CELL_CENTER_OFFSET, grid.colTolerance), colCount);
-            if (cell.colEnd < cell.colStart) {
-                cell.colEnd = cell.colStart;
-            }
-
-            cells.add(cell);
-
-            for (int r = cell.rowStart; r <= cell.rowEnd && r < rowCount; r++) {
-                for (int c = cell.colStart; c <= cell.colEnd && c < colCount; c++) {
-                    Cell existing = matrix[r][c];
-                    if (existing == null || area(cell.bounds) < area(existing.bounds)) {
-                        matrix[r][c] = cell;
-                    }
-                }
-            }
-        }
-
-        boolean[] rowHasFullWidthCell = new boolean[rowCount];
-        for (Cell cell : cells) {
-            if (cell.colStart == 0 && cell.colEnd == colCount - 1) {
-                for (int r = cell.rowStart; r <= cell.rowEnd && r < rowCount; r++) {
-                    rowHasFullWidthCell[r] = true;
-                }
-            }
-        }
-
-        return new CellGrid(rowCount, colCount, matrix, cells, rowHasFullWidthCell);
-    }
-
-    private static int locateInterval(double[] boundaries, double value, double tolerance) {
-        if (boundaries.length < 2) {
-            return 0;
-        }
-        if (value < boundaries[0] - tolerance) {
-            return 0;
-        }
-        if (value > boundaries[boundaries.length - 1] + tolerance) {
-            return boundaries.length - 2;
-        }
-        for (int i = 0; i < boundaries.length - 1; i++) {
-            double start = boundaries[i] - tolerance;
-            double end = boundaries[i + 1] + tolerance;
-            if (value >= start && value <= end) {
-                return i;
-            }
-        }
-        return Math.max(0, Math.min(boundaries.length - 2, (int) ((value - boundaries[0]) / Math.max(1.0, boundaries[1] - boundaries[0]))));
-    }
-
-    private static int clampIntervalIndex(int index, int count) {
-        if (count <= 0) {
-            return 0;
-        }
-        if (index < 0) {
-            return 0;
-        }
-        if (index >= count) {
-            return count - 1;
-        }
-        return index;
-    }
-
-    private static double area(Rect rect) {
-        return Math.max(1, rect.width) * Math.max(1, rect.height);
-    }
-
-    private static List<RowSlice> createRowSlices(GridModel grid) {
-        List<RowSlice> slices = new ArrayList<>();
-        for (int i = 0; i < grid.rowCount; i++) {
-            int top = (int) Math.floor(grid.rowBoundaries[i]);
-            int bottom = (int) Math.ceil(grid.rowBoundaries[i + 1]);
-            slices.add(new RowSlice(i, top, bottom));
-        }
-        return slices;
-    }
-
-    private ContentModel assignContent(List<RowSlice> rows,
-                                       CellGrid cellGrid,
-                                       GridModel grid,
-                                       Mat contentMat,
-                                       List<MatOfPoint> contentContours) {
-        List<List<TextFragment>> columnFragments = new ArrayList<>(grid.colCount);
-        for (int i = 0; i < grid.colCount; i++) {
-            columnFragments.add(new ArrayList<>());
-        }
-        List<CheckboxBand> checkboxBands = new ArrayList<>();
-
-        Mat gray = toGray(contentMat);
+    private void assignContent(TableGrid grid,
+                               Mat contentMat,
+                               Mat gray,
+                               List<MatOfPoint> contentContours) {
         for (MatOfPoint contour : contentContours) {
             Rect rect = Imgproc.boundingRect(contour);
-            if (!intersects(rect, grid.tableBounds, 3)) {
+            if (!intersects(rect, grid.bounds, 3)) {
                 continue;
             }
-
             double centerX = rect.x + rect.width / 2.0;
             double centerY = rect.y + rect.height / 2.0;
-            int rowIndex = locateInterval(grid.rowBoundaries, centerY, grid.rowTolerance);
-            int colIndex = locateInterval(grid.colBoundaries, centerX, grid.colTolerance);
-
-            if (rowIndex < 0 || rowIndex >= cellGrid.rowCount || colIndex < 0 || colIndex >= cellGrid.colCount) {
+            int rowIndex = locateInterval(grid.rowEdges, centerY);
+            int colIndex = locateInterval(grid.colEdges, centerX);
+            if (rowIndex < 0 || rowIndex >= grid.rowCount || colIndex < 0 || colIndex >= grid.colCount) {
                 continue;
             }
-
-            RowSlice slice = rows.get(rowIndex);
-            Cell cell = cellGrid.cellByRowCol[rowIndex][colIndex];
+            Cell cell = grid.cellAt(rowIndex, colIndex);
             if (cell == null) {
-                cell = findCell(cellGrid.cells, rect, centerX, centerY);
+                continue;
             }
 
-            if (isCheckboxCandidate(rect, grid.medianRowHeight)) {
+            if (isCheckboxCandidate(rect)) {
                 boolean checked = isCheckboxMarked(gray, rect);
-                CheckboxObservation observation = new CheckboxObservation(rect, checked);
-                slice.addCheckbox(observation);
-                checkboxBands.add(new CheckboxBand(slice, observation));
+                if (checked) {
+                    markRowsIncluded(grid, cell, true);
+                }
+                cell.addCheckbox(rect);
+                if (!checked) {
+                    markRowsIncluded(grid, cell, false);
+                }
                 continue;
             }
 
-            String ocr = performOcr(contentMat, rect);
-            if (ocr.isBlank()) {
+            String text = performOcr(contentMat, rect);
+            if (text.isBlank()) {
                 continue;
             }
-
-            TextFragment fragment = new TextFragment(rect, ocr);
-            slice.addFragment(colIndex, fragment);
-            if (cell != null) {
-                cell.addFragment(colIndex, fragment);
-            }
-            columnFragments.get(colIndex).add(fragment);
+            TextFragment fragment = new TextFragment(rect, text);
+            cell.addFragment(fragment);
         }
-        gray.release();
 
-        return new ContentModel(columnFragments, checkboxBands);
+        for (int row = 0; row < grid.rowCount; row++) {
+            for (ColumnType column : ColumnType.values()) {
+                if (column.ordinal() >= grid.colCount) {
+                    continue;
+                }
+                Cell cell = grid.cellAt(row, column.ordinal());
+                if (cell == null) {
+                    continue;
+                }
+                String combined = combineText(cell.fragments);
+                grid.rows[row].set(column, combined);
+            }
+        }
+
+        classifyRows(grid);
     }
 
-    private static Cell findCell(List<Cell> cells, Rect rect, double centerX, double centerY) {
-        for (Cell cell : cells) {
-            if (contains(cell.bounds, centerX, centerY)) {
-                return cell;
+    private static void classifyRows(TableGrid grid) {
+        for (RowData row : grid.rows) {
+            String document = row.get(ColumnType.DOCUMENT);
+            String tab = row.get(ColumnType.TAB);
+            boolean fullSpan = true;
+            for (int c = 0; c < grid.colCount; c++) {
+                if (grid.cellAt(row.index, c) == null) {
+                    fullSpan = false;
+                    break;
+                }
+            }
+            boolean uppercaseDoc = !document.isBlank() && document.equals(document.toUpperCase(Locale.ROOT));
+            if (row.index == 0 && document.contains("DELIVERY PACKAGE CONTENT")) {
+                row.headerRow = true;
+            } else if (uppercaseDoc && fullSpan) {
+                row.sectionRow = true;
+            } else if (document.contains("DOCUMENTS") && tab.contains("TAB")) {
+                row.headerRow = true;
             }
         }
-        Cell best = null;
-        double bestOverlap = 0;
-        for (Cell cell : cells) {
-            double overlap = intersectionArea(cell.bounds, rect);
-            if (overlap > bestOverlap) {
-                bestOverlap = overlap;
-                best = cell;
+    }
+
+    private static void propagateMergedCellText(TableGrid grid, ColumnType column) {
+        int columnIndex = column.ordinal();
+        if (columnIndex >= grid.colCount) {
+            return;
+        }
+        for (int row = 0; row < grid.rowCount; row++) {
+            Cell cell = grid.cellAt(row, columnIndex);
+            if (cell == null) {
+                continue;
+            }
+            if (cell.rowStart == cell.rowEnd) {
+                continue;
+            }
+            String text = combineText(cell.fragments);
+            if (text.isEmpty()) {
+                continue;
+            }
+            for (int r = cell.rowStart; r <= cell.rowEnd; r++) {
+                grid.rows[r].set(column, text);
             }
         }
-        return best;
+    }
+
+    private static List<RowRecord> assembleRecords(TableGrid grid) {
+        List<RowRecord> records = new ArrayList<>();
+        for (RowData row : grid.rows) {
+            if (row.headerRow || row.sectionRow) {
+                records.add(new RowRecord(false,
+                    row.get(ColumnType.TAB),
+                    row.get(ColumnType.DOCUMENT),
+                    row.get(ColumnType.FORM_NUMBER),
+                    row.get(ColumnType.DELIVERY_REQUIREMENT),
+                    row.headerRow,
+                    row.sectionRow));
+                continue;
+            }
+
+            boolean hasData = Arrays.stream(ColumnType.values())
+                .filter(type -> type != ColumnType.CHECK_INCLUDED)
+                .anyMatch(type -> !row.get(type).isEmpty());
+
+            if (!hasData && !row.included) {
+                continue;
+            }
+
+            records.add(new RowRecord(row.included,
+                row.get(ColumnType.TAB),
+                row.get(ColumnType.DOCUMENT),
+                row.get(ColumnType.FORM_NUMBER),
+                row.get(ColumnType.DELIVERY_REQUIREMENT),
+                false,
+                false));
+        }
+        return records;
     }
 
     private Mat toGray(Mat source) {
@@ -699,23 +511,6 @@ public final class ExtractTableOfContents {
         return gray;
     }
 
-    private static boolean contains(Rect rect, double x, double y) {
-        return x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height;
-    }
-
-    private static double intersectionArea(Rect a, Rect b) {
-        int left = Math.max(a.x, b.x);
-        int right = Math.min(a.x + a.width, b.x + b.width);
-        int top = Math.max(a.y, b.y);
-        int bottom = Math.min(a.y + a.height, b.y + b.height);
-        int width = right - left;
-        int height = bottom - top;
-        if (width <= 0 || height <= 0) {
-            return 0;
-        }
-        return width * (double) height;
-    }
-
     private static boolean intersects(Rect rect, Rect bounds, int margin) {
         return rect.x + rect.width > bounds.x - margin &&
             rect.x < bounds.x + bounds.width + margin &&
@@ -723,21 +518,13 @@ public final class ExtractTableOfContents {
             rect.y < bounds.y + bounds.height + margin;
     }
 
-    private static boolean isCheckboxCandidate(Rect rect, double medianRowHeight) {
+    private static boolean isCheckboxCandidate(Rect rect) {
         if (rect.width <= 0 || rect.height <= 0) {
             return false;
         }
         double area = rect.width * rect.height;
         if (area < CHECKBOX_MIN_AREA) {
             return false;
-        }
-        double size = Math.max(rect.width, rect.height);
-        if (medianRowHeight > 0) {
-            double minSize = Math.max(8.0, medianRowHeight * 0.22);
-            double maxSize = Math.max(10.0, medianRowHeight * 0.75);
-            if (size < minSize || size > maxSize) {
-                return false;
-            }
         }
         double aspect = rect.width / (double) rect.height;
         return aspect > (1.0 - CHECKBOX_ASPECT_TOL) && aspect < (1.0 + CHECKBOX_ASPECT_TOL);
@@ -759,6 +546,16 @@ public final class ExtractTableOfContents {
         return ratio >= CHECKBOX_INK_RATIO;
     }
 
+    private void markRowsIncluded(TableGrid grid, Cell cell, boolean checked) {
+        for (int r = cell.rowStart; r <= cell.rowEnd && r < grid.rowCount; r++) {
+            if (checked) {
+                grid.rows[r].included = true;
+            } else if (!grid.rows[r].included) {
+                grid.rows[r].included = false;
+            }
+        }
+    }
+
     private String performOcr(Mat source, Rect rect) {
         Rect roi = clampRect(rect, source, OCR_MARGIN);
         Mat patch = new Mat(source, roi).clone();
@@ -766,7 +563,7 @@ public final class ExtractTableOfContents {
         patch.release();
         try {
             String raw = OCREngine.doOCR(image);
-            return normalizeLines(raw);
+            return normalize(raw);
         } catch (TesseractException e) {
             return "";
         }
@@ -801,326 +598,85 @@ public final class ExtractTableOfContents {
         return image;
     }
 
-    private static ColumnModel inferColumns(GridModel grid) {
-        int colCount = grid.colCount;
-        ColumnType[] mapping = new ColumnType[colCount];
-        ColumnType[] expectedOrder = {
-            ColumnType.CHECK_INCLUDED,
-            ColumnType.TAB,
-            ColumnType.DOCUMENT,
-            ColumnType.FORM_NUMBER,
-            ColumnType.DELIVERY_REQUIREMENT
-        };
-        for (int i = 0; i < colCount; i++) {
-            mapping[i] = i < expectedOrder.length ? expectedOrder[i] : ColumnType.UNKNOWN;
+    private static double median(double[] values) {
+        if (values.length == 0) {
+            return 0;
         }
-        Map<ColumnType, Integer> indexByType = new HashMap<>();
-        for (int i = 0; i < mapping.length; i++) {
-            indexByType.putIfAbsent(mapping[i], i);
+        double[] copy = Arrays.copyOf(values, values.length);
+        Arrays.sort(copy);
+        int mid = copy.length / 2;
+        if (copy.length % 2 == 0) {
+            return (copy[mid - 1] + copy[mid]) / 2.0;
         }
-        return new ColumnModel(mapping, indexByType);
+        return copy[mid];
     }
 
-    private static void defineCheckboxBands(List<CheckboxBand> checkboxes, GridModel grid) {
-        if (checkboxes.isEmpty()) {
-            return;
+    private static double[] clusterEdges(List<Double> edges, double tolerance, double min, double max) {
+        edges.sort(Double::compareTo);
+        List<Double> clusters = new ArrayList<>();
+        double current = edges.get(0);
+        double sum = edges.get(0);
+        int count = 1;
+        for (int i = 1; i < edges.size(); i++) {
+            double value = edges.get(i);
+            if (Math.abs(value - current) <= tolerance) {
+                sum += value;
+                count++;
+                current = sum / count;
+            } else {
+                clusters.add(current);
+                current = value;
+                sum = value;
+                count = 1;
+            }
         }
-        checkboxes.sort(Comparator.comparingDouble(CheckboxBand::centerY));
-        double margin = Math.max(3.0, grid.medianRowHeight * BAND_MARGIN_FACTOR);
-        for (int i = 0; i < checkboxes.size(); i++) {
-            CheckboxBand current = checkboxes.get(i);
-            double center = current.centerY();
-            double top = current.slice.top - margin;
-            double bottom = current.slice.bottom + margin;
-
-            if (i > 0) {
-                double midpoint = (checkboxes.get(i - 1).centerY() + center) / 2.0;
-                top = Math.max(top, midpoint);
-            }
-            if (i + 1 < checkboxes.size()) {
-                double midpoint = (center + checkboxes.get(i + 1).centerY()) / 2.0;
-                bottom = Math.min(bottom, midpoint);
-            }
-
-            if (bottom <= top) {
-                bottom = top + Math.max(2.0, grid.medianRowHeight * 0.4);
-            }
-
-            top = Math.max(top, grid.tableBounds.y);
-            bottom = Math.min(bottom, grid.tableBounds.y + grid.tableBounds.height);
-
-            current.bandTop = top;
-            current.bandBottom = bottom;
+        clusters.add(current);
+        if (clusters.size() == 1) {
+            return new double[]{min, max};
         }
+        clusters.set(0, min);
+        clusters.set(clusters.size() - 1, max);
+        double[] result = new double[clusters.size()];
+        for (int i = 0; i < clusters.size(); i++) {
+            result[i] = clusters.get(i);
+        }
+        return result;
     }
 
-    private static List<RowRecord> assembleRows(List<RowSlice> slices,
-                                                ColumnModel columns,
-                                                GridModel grid,
-                                                CellGrid cellGrid,
-                                                ContentModel content) {
-        List<RowRecord> records = new ArrayList<>();
-        int tabIdx = safeIndex(columns.indexOf(ColumnType.TAB));
-        int docIdx = safeIndex(columns.indexOf(ColumnType.DOCUMENT));
-        int formIdx = safeIndex(columns.indexOf(ColumnType.FORM_NUMBER));
-        int deliveryIdx = safeIndex(columns.indexOf(ColumnType.DELIVERY_REQUIREMENT));
-
-        boolean[] headerFlags = identifyHeaderRows(slices, tabIdx, docIdx, grid);
-        boolean[] sectionFlags = identifySectionRows(slices, cellGrid, docIdx, headerFlags);
-
-        Map<Integer, List<DataRow>> dataRowsBySlice = new HashMap<>();
-        List<DataRow> dataRows = new ArrayList<>();
-
-        if (!content.checkboxes.isEmpty()) {
-            for (CheckboxBand band : content.checkboxes) {
-                if (headerFlags[band.slice.index]) {
-                    continue;
-                }
-                DataRow dataRow = buildDataRow(band, content, cellGrid, tabIdx, docIdx, formIdx, deliveryIdx);
-                dataRows.add(dataRow);
-                dataRowsBySlice.computeIfAbsent(band.slice.index, key -> new ArrayList<>()).add(dataRow);
-            }
-            propagateDataRows(dataRows, columns, cellGrid, tabIdx, docIdx, deliveryIdx);
+    private static int locateInterval(double[] edges, double value) {
+        if (edges.length < 2) {
+            return -1;
         }
-
-        for (int i = 0; i < slices.size(); i++) {
-            RowSlice slice = slices.get(i);
-            if (headerFlags[i]) {
-                records.add(new RowRecord(false,
-                    slice.getText(tabIdx),
-                    slice.getText(docIdx),
-                    slice.getText(formIdx),
-                    slice.getText(deliveryIdx),
-                    true,
-                    false));
-            } else if (sectionFlags[i]) {
-                records.add(new RowRecord(false,
-                    slice.getText(tabIdx),
-                    slice.getText(docIdx),
-                    slice.getText(formIdx),
-                    slice.getText(deliveryIdx),
-                    false,
-                    true));
-            }
-
-            List<DataRow> rowsForSlice = dataRowsBySlice.get(i);
-            if (rowsForSlice != null) {
-                rowsForSlice.sort(Comparator.comparingDouble(row -> row.band.centerY()));
-                for (DataRow dataRow : rowsForSlice) {
-                    records.add(dataRow.toRecord());
-                }
-            } else if (!headerFlags[i] && !sectionFlags[i]) {
-                String tab = slice.getText(tabIdx);
-                String document = slice.getText(docIdx);
-                String form = slice.getText(formIdx);
-                String delivery = slice.getText(deliveryIdx);
-                if (!tab.isEmpty() || !document.isEmpty() || !form.isEmpty() || !delivery.isEmpty()) {
-                    records.add(new RowRecord(false, tab, document, form, delivery, false, false));
-                }
+        if (value < edges[0]) {
+            return 0;
+        }
+        if (value >= edges[edges.length - 1]) {
+            return edges.length - 2;
+        }
+        for (int i = 0; i < edges.length - 1; i++) {
+            if (value >= edges[i] && value < edges[i + 1]) {
+                return i;
             }
         }
-
-        return records;
+        return edges.length - 2;
     }
 
-    private static DataRow buildDataRow(CheckboxBand band,
-                                        ContentModel content,
-                                        CellGrid cellGrid,
-                                        int tabIdx,
-                                        int docIdx,
-                                        int formIdx,
-                                        int deliveryIdx) {
-        DataRow dataRow = new DataRow(band, band.isChecked());
-        double top = band.bandTop;
-        double bottom = band.bandBottom;
-
-        dataRow.tab = collectBandText(content.columnFragments, tabIdx, top, bottom);
-        dataRow.document = collectBandText(content.columnFragments, docIdx, top, bottom);
-        dataRow.formNumber = collectBandText(content.columnFragments, formIdx, top, bottom);
-        dataRow.deliveryRequirement = collectBandText(content.columnFragments, deliveryIdx, top, bottom);
-
-        if ((dataRow.tab == null || dataRow.tab.isBlank()) && tabIdx >= 0) {
-            dataRow.tab = fallbackFromCell(cellGrid, band.slice.index, tabIdx);
-        }
-        if ((dataRow.document == null || dataRow.document.isBlank()) && docIdx >= 0) {
-            dataRow.document = fallbackFromCell(cellGrid, band.slice.index, docIdx);
-        }
-        if ((dataRow.formNumber == null || dataRow.formNumber.isBlank()) && formIdx >= 0) {
-            dataRow.formNumber = fallbackFromCell(cellGrid, band.slice.index, formIdx);
-        }
-        if ((dataRow.deliveryRequirement == null || dataRow.deliveryRequirement.isBlank()) && deliveryIdx >= 0) {
-            dataRow.deliveryRequirement = fallbackFromCell(cellGrid, band.slice.index, deliveryIdx);
-        }
-
-        dataRow.tab = normalizeLines(dataRow.tab);
-        dataRow.document = normalizeLines(dataRow.document);
-        dataRow.formNumber = normalizeLines(dataRow.formNumber);
-        dataRow.deliveryRequirement = normalizeLines(dataRow.deliveryRequirement);
-
-        return dataRow;
-    }
-
-    private static void propagateDataRows(List<DataRow> rows,
-                                          ColumnModel columns,
-                                          CellGrid cellGrid,
-                                          int tabIdx,
-                                          int docIdx,
-                                          int deliveryIdx) {
-        propagateColumn(rows, ColumnType.TAB, tabIdx, cellGrid);
-        propagateColumn(rows, ColumnType.DOCUMENT, docIdx, cellGrid);
-        propagateColumn(rows, ColumnType.DELIVERY_REQUIREMENT, deliveryIdx, cellGrid);
-    }
-
-    private static void propagateColumn(List<DataRow> rows,
-                                        ColumnType type,
-                                        int colIdx,
-                                        CellGrid cellGrid) {
-        if (colIdx < 0) {
-            return;
-        }
-        for (int i = 0; i < rows.size(); i++) {
-            DataRow row = rows.get(i);
-            String value = row.getField(type);
-            if (value != null && !value.isBlank()) {
-                continue;
-            }
-
-            CheckboxBand band = row.band;
-            Cell cell = cellGrid.cellByRowCol[band.slice.index][colIdx];
-            if (cell == null) {
-                continue;
-            }
-
-            if (cell.rowStart < cell.rowEnd) {
-                for (int j = i - 1; j >= 0; j--) {
-                    DataRow candidate = rows.get(j);
-                    if (candidate.band.slice.index >= cell.rowStart && candidate.band.slice.index <= cell.rowEnd) {
-                        String candidateValue = candidate.getField(type);
-                        if (candidateValue != null && !candidateValue.isBlank()) {
-                            row.setField(type, candidateValue);
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (row.getField(type) == null || row.getField(type).isBlank()) {
-                String cellText = cell.getText(colIdx);
-                if (cellText != null && !cellText.isBlank()) {
-                    row.setField(type, cellText);
-                }
-            }
-        }
-    }
-
-    private static boolean[] identifyHeaderRows(List<RowSlice> slices,
-                                                int tabIdx,
-                                                int docIdx,
-                                                GridModel grid) {
-        boolean[] header = new boolean[slices.size()];
-        for (int i = 0; i < slices.size(); i++) {
-            RowSlice slice = slices.get(i);
-            String doc = slice.getText(docIdx).toUpperCase(Locale.ROOT);
-            String tab = slice.getText(tabIdx).toUpperCase(Locale.ROOT);
-            if ((doc.contains("DELIVERY PACKAGE CONTENT") || (doc.contains("DOCUMENT") && tab.contains("TAB"))) &&
-                (slice.top - grid.tableBounds.y) < grid.medianRowHeight * 4) {
-                header[i] = true;
-            }
-        }
-        return header;
-    }
-
-    private static boolean[] identifySectionRows(List<RowSlice> slices,
-                                                 CellGrid cellGrid,
-                                                 int docIdx,
-                                                 boolean[] headerFlags) {
-        boolean[] section = new boolean[slices.size()];
-        for (int i = 0; i < slices.size(); i++) {
-            RowSlice slice = slices.get(i);
-            if (headerFlags[i] || slice.hasCheckbox()) {
-                continue;
-            }
-            String doc = slice.getText(docIdx);
-            if (doc.isBlank()) {
-                continue;
-            }
-            boolean looksUpper = doc.equals(doc.toUpperCase(Locale.ROOT)) && doc.length() > 6;
-            if ((cellGrid.rowHasFullWidthCell != null && cellGrid.rowHasFullWidthCell[i]) || looksUpper) {
-                section[i] = true;
-            }
-        }
-        return section;
-    }
-
-    private static String collectBandText(List<List<TextFragment>> columnFragments,
-                                          int columnIndex,
-                                          double bandTop,
-                                          double bandBottom) {
-        if (columnIndex < 0 || columnIndex >= columnFragments.size()) {
+    private static String combineText(List<TextFragment> fragments) {
+        if (fragments.isEmpty()) {
             return "";
         }
-        List<TextFragment> fragments = columnFragments.get(columnIndex);
-        if (fragments == null || fragments.isEmpty()) {
-            return "";
-        }
-        List<TextFragment> selected = new ArrayList<>();
-        for (TextFragment fragment : fragments) {
-            double center = fragment.rect.y + fragment.rect.height / 2.0;
-            if (center >= bandTop && center <= bandBottom) {
-                selected.add(fragment);
-            } else if (fragment.rect.y >= bandTop && fragment.rect.y + fragment.rect.height <= bandBottom) {
-                selected.add(fragment);
-            }
-        }
-        return combineFragments(selected);
+        return fragments.stream()
+            .sorted(Comparator.comparingInt(fragment -> fragment.rect.y))
+            .map(fragment -> fragment.text)
+            .filter(text -> !text.isBlank())
+            .collect(Collectors.joining("\n"));
     }
 
-    private static String fallbackFromCell(CellGrid cellGrid, int rowIndex, int columnIndex) {
-        if (rowIndex < 0 || columnIndex < 0 || rowIndex >= cellGrid.rowCount || columnIndex >= cellGrid.colCount) {
+    private static String normalize(String text) {
+        if (text == null) {
             return "";
         }
-        Cell cell = cellGrid.cellByRowCol[rowIndex][columnIndex];
-        if (cell == null) {
-            return "";
-        }
-        return cell.getText(columnIndex);
-    }
-
-    private static int safeIndex(Integer index) {
-        return index == null ? -1 : index;
-    }
-
-    private static String combineFragments(List<TextFragment> fragments) {
-        if (fragments == null || fragments.isEmpty()) {
-            return "";
-        }
-        List<TextFragment> sorted = new ArrayList<>(fragments);
-        sorted.sort(Comparator.comparingInt(fragment -> fragment.rect.y));
-        StringBuilder builder = new StringBuilder();
-        int previousBottom = Integer.MIN_VALUE;
-        for (TextFragment fragment : sorted) {
-            String text = normalizeLines(fragment.text);
-            if (text.isEmpty()) {
-                continue;
-            }
-            if (builder.length() > 0) {
-                if (fragment.rect.y > previousBottom + 4) {
-                    builder.append('\n');
-                } else {
-                    builder.append(' ');
-                }
-            }
-            builder.append(text);
-            previousBottom = fragment.rect.y + fragment.rect.height;
-        }
-        return builder.toString().trim();
-    }
-
-    private static String normalizeLines(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String trimmed = raw.trim();
+        String trimmed = text.trim();
         if (trimmed.isEmpty()) {
             return "";
         }
@@ -1135,6 +691,31 @@ public final class ExtractTableOfContents {
                 builder.append('\n');
             }
             builder.append(normalized);
+        }
+        return builder.toString();
+    }
+
+    private static String buildBorder(int[] widths) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("+");
+        for (int width : widths) {
+            builder.append("-");
+            for (int i = 0; i < width; i++) {
+                builder.append("-");
+            }
+            builder.append("-");
+            builder.append("+");
+        }
+        return builder.toString();
+    }
+
+    private static String pad(String text, int width) {
+        if (text.length() >= width) {
+            return text;
+        }
+        StringBuilder builder = new StringBuilder(text);
+        while (builder.length() < width) {
+            builder.append(' ');
         }
         return builder.toString();
     }
