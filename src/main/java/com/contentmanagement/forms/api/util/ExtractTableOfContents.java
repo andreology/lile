@@ -60,6 +60,8 @@ public final class ExtractTableOfContents {
         return assembleRecords(grid);
     }
 
+    private static final int MAX_CELL_WIDTH = 42;
+
     public static void printRecordsAsTable(List<RowRecord> records) {
         if (records == null || records.isEmpty()) {
             System.out.println("(no rows)");
@@ -71,10 +73,10 @@ public final class ExtractTableOfContents {
         for (RowRecord record : records) {
             rows.add(new String[]{
                 record.isIncluded() ? "✔" : "",
-                record.getTab(),
-                record.getDocument(),
-                record.getFormNumber(),
-                record.getDeliveryRequirement(),
+                wrapCell(record.getTab()),
+                wrapCell(record.getDocument()),
+                wrapCell(record.getFormNumber()),
+                wrapCell(record.getDeliveryRequirement()),
                 record.isHeaderRow() ? "H" : "",
                 record.isSectionRow() ? "S" : ""
             });
@@ -138,6 +140,37 @@ public final class ExtractTableOfContents {
         }
         if (lines.isEmpty()) {
             lines.add(new String[row.length]);
+        }
+        return lines;
+    }
+
+    private static String wrapCell(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        List<String> wrapped = new ArrayList<>();
+        for (String line : value.split("\\R")) {
+            wrapped.addAll(wrapLine(line, MAX_CELL_WIDTH));
+        }
+        return String.join("\n", wrapped);
+    }
+
+    private static List<String> wrapLine(String text, int width) {
+        List<String> lines = new ArrayList<>();
+        String remaining = text;
+        while (remaining.length() > width) {
+            int breakPos = remaining.lastIndexOf(' ', width);
+            if (breakPos <= 0) {
+                breakPos = width;
+            }
+            lines.add(remaining.substring(0, breakPos).trim());
+            remaining = remaining.substring(breakPos).trim();
+        }
+        if (!remaining.isEmpty()) {
+            lines.add(remaining);
+        }
+        if (lines.isEmpty()) {
+            lines.add("");
         }
         return lines;
     }
