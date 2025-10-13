@@ -6,11 +6,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.stream.Collectors;
+import java.util.Set;
 import net.sourceforge.tess4j.Tesseract;
 import net.sourceforge.tess4j.TesseractException;
 import org.opencv.core.Core;
@@ -24,10 +26,12 @@ public final class ExtractTableOfContents {
 
     private static final double EDGE_TOLERANCE_FACTOR = 0.35;
     private static final double MIN_EDGE_TOLERANCE = 3.0;
+    private static final double RANGE_TOLERANCE = 4.0;
     private static final int OCR_MARGIN = 2;
     private static final double CHECKBOX_ASPECT_TOL = 0.35;
     private static final double CHECKBOX_MIN_AREA = 36.0;
     private static final double CHECKBOX_INK_RATIO = 0.08;
+    private static final int MAX_CELL_WIDTH = 42;
 
     private final Tesseract OCREngine;
 
@@ -45,31 +49,30 @@ public final class ExtractTableOfContents {
         Objects.requireNonNull(contentContours, "contentContours");
 
         TableGrid grid = TableGrid.fromContours(cellContours);
-        if (grid.rowCount == 0 || grid.colCount == 0) {
+        if (grid.isEmpty()) {
             return Collections.emptyList();
         }
 
-        Mat grayContent = toGray(contentMat);
-        assignContent(grid, contentMat, grayContent, contentContours);
-        grayContent.release();
+        Mat gray = toGray(contentMat);
+        assignContent(grid, contentMat, gray, contentContours);
+        gray.release();
 
-        propagateMergedCellText(grid, ColumnType.DOCUMENT);
-        propagateMergedCellText(grid, ColumnType.DELIVERY_REQUIREMENT);
-        propagateMergedCellText(grid, ColumnType.TAB);
-
-        return assembleRecords(grid);
+        ColumnSlices slices = ColumnSlices.build(grid);
+        List<RowRecord> records = buildRecords(grid, slices);
+        return records;
     }
-
-    private static final int MAX_CELL_WIDTH = 42;
 
     public static void printRecordsAsTable(List<RowRecord> records) {
         if (records == null || records.isEmpty()) {
             System.out.println("(no rows)");
             return;
         }
+
         String[] headers = {"Included", "Tab", "Document", "Form Number", "Delivery Requirement", "Header", "Section"};
         List<String[]> rows = new ArrayList<>();
+        List<Boolean> spanRow = new ArrayList<>();
         rows.add(headers);
+        spanRow.add(false);
         for (RowRecord record : records) {
             rows.add(new String[]{
                 record.isIncluded() ? "✔" : "",
@@ -80,6 +83,7 @@ public final class ExtractTableOfContents {
                 record.isHeaderRow() ? "H" : "",
                 record.isSectionRow() ? "S" : ""
             });
+            spanRow.add(record.isHeaderRow() || record.isSectionRow());
         }
 
         int[] widths = new int[headers.length];
@@ -90,12 +94,26 @@ public final class ExtractTableOfContents {
         }
 
         String border = buildBorder(widths);
+        int fullWidth = border.length() - 2;
         System.out.println(border);
         for (int i = 0; i < rows.size(); i++) {
             String[] row = rows.get(i);
+            boolean span = spanRow.get(i);
+            if (span && i > 0) {
+                String[] lines = row[2] == null ? new String[]{""} : row[2].split("\\R");
+                if (lines.length == 0) {
+                    lines = new String[]{""};
+                }
+                for (String line : lines) {
+                    String padded = pad(line, fullWidth);
+                    System.out.println("|" + padded + "|");
+                }
+                System.out.println(border);
+                continue;
+            }
+
             List<String[]> wrapped = wrapRow(row, widths);
-            for (int lineIndex = 0; lineIndex < wrapped.size(); lineIndex++) {
-                String[] line = wrapped.get(lineIndex);
+            for (String[] line : wrapped) {
                 StringBuilder out = new StringBuilder("|");
                 for (int col = 0; col < line.length; col++) {
                     out.append(" ").append(pad(line[col], widths[col])).append(" |");
@@ -103,10 +121,38 @@ public final class ExtractTableOfContents {
                 System.out.println(out);
             }
             System.out.println(border);
-            if (i == 0) {
-                // already printed border after header
-            }
         }
+    }
+
+    private static String wrapCell(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        List<String> wrapped = new ArrayList<>();
+        for (String line : value.split("\\R")) {
+            wrapped.addAll(wrapLine(line, MAX_CELL_WIDTH));
+        }
+        return String.join("\n", wrapped);
+    }
+
+    private static List<String> wrapLine(String text, int width) {
+        List<String> lines = new ArrayList<>();
+        String remaining = text;
+        while (remaining.length() > width) {
+            int breakPos = remaining.lastIndexOf(' ', width);
+            if (breakPos <= 0) {
+                breakPos = width;
+            }
+            lines.add(remaining.substring(0, breakPos).trim());
+            remaining = remaining.substring(breakPos).trim();
+        }
+        if (!remaining.isEmpty()) {
+            lines.add(remaining);
+        }
+        if (lines.isEmpty()) {
+            lines.add("");
+        }
+        return lines;
     }
 
     private static int measureMaxWidth(String text) {
@@ -144,35 +190,29 @@ public final class ExtractTableOfContents {
         return lines;
     }
 
-    private static String wrapCell(String value) {
-        if (value == null || value.isEmpty()) {
-            return "";
+    private static String buildBorder(int[] widths) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("+");
+        for (int width : widths) {
+            builder.append("-");
+            for (int i = 0; i < width; i++) {
+                builder.append("-");
+            }
+            builder.append("-");
+            builder.append("+");
         }
-        List<String> wrapped = new ArrayList<>();
-        for (String line : value.split("\\R")) {
-            wrapped.addAll(wrapLine(line, MAX_CELL_WIDTH));
-        }
-        return String.join("\n", wrapped);
+        return builder.toString();
     }
 
-    private static List<String> wrapLine(String text, int width) {
-        List<String> lines = new ArrayList<>();
-        String remaining = text;
-        while (remaining.length() > width) {
-            int breakPos = remaining.lastIndexOf(' ', width);
-            if (breakPos <= 0) {
-                breakPos = width;
-            }
-            lines.add(remaining.substring(0, breakPos).trim());
-            remaining = remaining.substring(breakPos).trim();
+    private static String pad(String text, int width) {
+        if (text.length() >= width) {
+            return text;
         }
-        if (!remaining.isEmpty()) {
-            lines.add(remaining);
+        StringBuilder builder = new StringBuilder(text);
+        while (builder.length() < width) {
+            builder.append(' ');
         }
-        if (lines.isEmpty()) {
-            lines.add("");
-        }
-        return lines;
+        return builder.toString();
     }
 
     public static final class RowRecord {
@@ -254,185 +294,151 @@ public final class ExtractTableOfContents {
         DELIVERY_REQUIREMENT
     }
 
-    private static final class TableGrid {
-        final double[] rowEdges;
-        final double[] colEdges;
-        final int rowCount;
-        final int colCount;
-        final Rect bounds;
-        final Cell[][] cellByRowCol;
-        final RowData[] rows;
+    private List<RowRecord> buildRecords(TableGrid grid, ColumnSlices slices) {
+        List<ContentSlice> tabSlices = new ArrayList<>(slices.tabSlices);
+        List<ContentSlice> documentSlices = new ArrayList<>(slices.documentSlices);
+        List<ContentSlice> formSlices = new ArrayList<>(slices.formSlices);
+        List<ContentSlice> deliverySlices = new ArrayList<>(slices.deliverySlices);
+        List<CheckboxSlice> checkSlices = new ArrayList<>(slices.checkSlices);
 
-        static TableGrid fromContours(List<MatOfPoint> cellContours) {
-            List<Rect> rects = new ArrayList<>();
-            for (MatOfPoint contour : cellContours) {
-                Rect rect = Imgproc.boundingRect(contour);
-                if (rect.width > 0 && rect.height > 0) {
-                    rects.add(rect);
+        int docIndex = 0;
+        int formIndex = 0;
+        int deliveryIndex = 0;
+        int checkIndex = 0;
+        int tabIndex = 0;
+        ContentSlice activeTab = tabSlices.isEmpty() ? null : tabSlices.get(tabIndex);
+
+        List<OrderedRecord> ordered = new ArrayList<>();
+
+        while (docIndex < documentSlices.size()) {
+            ContentSlice docSlice = documentSlices.get(docIndex);
+            if (docSlice.text.isBlank()) {
+                docIndex++;
+                continue;
+            }
+
+            BannerType banner = classifyBanner(docSlice, grid);
+            if (banner != BannerType.NONE) {
+                boolean isHeader = banner == BannerType.HEADER;
+                boolean isSection = banner == BannerType.SECTION;
+                RowRecord record = new RowRecord(false,
+                    "",
+                    docSlice.text,
+                    "",
+                    "",
+                    isHeader,
+                    isSection);
+                ordered.add(new OrderedRecord(record, docSlice.getVisualTop()));
+                docIndex++;
+                continue;
+            }
+
+            double docTop = docSlice.top;
+            double docBottom = docSlice.bottom;
+            double docCenter = (docTop + docBottom) / 2.0;
+
+            // Align tab
+            if (activeTab != null) {
+                while (activeTab != null && docCenter > activeTab.getCellBottom() + RANGE_TOLERANCE && tabIndex + 1 < tabSlices.size()) {
+                    tabIndex++;
+                    activeTab = tabSlices.get(tabIndex);
                 }
-            }
-            if (rects.isEmpty()) {
-                return new TableGrid(new double[0], new double[0], new Rect(), new Cell[0][0], new RowData[0]);
-            }
-
-            double minX = Double.MAX_VALUE;
-            double minY = Double.MAX_VALUE;
-            double maxX = Double.MIN_VALUE;
-            double maxY = Double.MIN_VALUE;
-
-            double[] heights = new double[rects.size()];
-            double[] widths = new double[rects.size()];
-            List<Double> rowEdges = new ArrayList<>();
-            List<Double> colEdges = new ArrayList<>();
-
-            for (int i = 0; i < rects.size(); i++) {
-                Rect rect = rects.get(i);
-                heights[i] = rect.height;
-                widths[i] = rect.width;
-
-                double top = rect.y;
-                double bottom = rect.y + rect.height;
-                double left = rect.x;
-                double right = rect.x + rect.width;
-
-                rowEdges.add(top);
-                rowEdges.add(bottom);
-                colEdges.add(left);
-                colEdges.add(right);
-
-                minX = Math.min(minX, left);
-                minY = Math.min(minY, top);
-                maxX = Math.max(maxX, right);
-                maxY = Math.max(maxY, bottom);
-            }
-
-            double medianHeight = median(heights);
-            double medianWidth = median(widths);
-            double rowTolerance = Math.max(MIN_EDGE_TOLERANCE, medianHeight * EDGE_TOLERANCE_FACTOR);
-            double colTolerance = Math.max(MIN_EDGE_TOLERANCE, medianWidth * EDGE_TOLERANCE_FACTOR);
-
-            double[] rowBoundaries = clusterEdges(rowEdges, rowTolerance, minY, maxY);
-            double[] colBoundaries = clusterEdges(colEdges, colTolerance, minX, maxX);
-
-            Rect tableBounds = new Rect(
-                (int) Math.floor(minX),
-                (int) Math.floor(minY),
-                (int) Math.ceil(Math.max(1.0, maxX - minX)),
-                (int) Math.ceil(Math.max(1.0, maxY - minY))
-            );
-
-            int rowCount = Math.max(0, rowBoundaries.length - 1);
-            int colCount = Math.max(0, colBoundaries.length - 1);
-            Cell[][] matrix = new Cell[rowCount][colCount];
-
-            for (Rect rect : rects) {
-                int rowStart = locateInterval(rowBoundaries, rect.y + 1e-3);
-                int rowEnd = locateInterval(rowBoundaries, rect.y + rect.height - 1e-3);
-                int colStart = locateInterval(colBoundaries, rect.x + 1e-3);
-                int colEnd = locateInterval(colBoundaries, rect.x + rect.width - 1e-3);
-
-                Cell cell = new Cell(rect, rowStart, rowEnd, colStart, colEnd);
-                for (int r = rowStart; r <= rowEnd; r++) {
-                    for (int c = colStart; c <= colEnd; c++) {
-                        if (r >= 0 && r < rowCount && c >= 0 && c < colCount) {
-                            matrix[r][c] = cell;
-                        }
+                if (activeTab != null && docCenter < activeTab.getCellTop() - RANGE_TOLERANCE && tabIndex + 1 < tabSlices.size()) {
+                    while (activeTab != null && docCenter < activeTab.getCellTop() - RANGE_TOLERANCE && tabIndex + 1 < tabSlices.size()) {
+                        tabIndex++;
+                        activeTab = tabSlices.get(tabIndex);
                     }
                 }
             }
-
-            RowData[] rows = new RowData[rowCount];
-            for (int r = 0; r < rowCount; r++) {
-                rows[r] = new RowData(r, colCount);
+            String tabText = "";
+            if (activeTab != null && rangesOverlap(activeTab.getCellTop(), activeTab.getCellBottom(), docTop, docBottom)) {
+                tabText = activeTab.text;
             }
 
-            return new TableGrid(rowBoundaries, colBoundaries, tableBounds, matrix, rows);
-        }
-
-        private TableGrid(double[] rowEdges,
-                           double[] colEdges,
-                           Rect bounds,
-                           Cell[][] cellByRowCol,
-                           RowData[] rows) {
-            this.rowEdges = rowEdges;
-            this.colEdges = colEdges;
-            this.bounds = bounds;
-            this.cellByRowCol = cellByRowCol;
-            this.rows = rows;
-            this.rowCount = rows.length;
-            this.colCount = colEdges.length > 0 ? colEdges.length - 1 : 0;
-        }
-
-        Cell cellAt(int row, int col) {
-            if (row < 0 || col < 0 || row >= rowCount || col >= colCount) {
-                return null;
+            // Align checkbox
+            CheckboxSlice matchedCheck = null;
+            while (checkIndex < checkSlices.size()) {
+                CheckboxSlice candidate = checkSlices.get(checkIndex);
+                if (candidate.bottom < docTop - RANGE_TOLERANCE) {
+                    checkIndex++;
+                    continue;
+                }
+                if (candidate.top > docBottom + RANGE_TOLERANCE) {
+                    break;
+                }
+                if (rangeContains(candidate.top, candidate.bottom, docTop, docBottom) || pointWithin(candidate.center(), docTop, docBottom)) {
+                    matchedCheck = candidate;
+                    checkIndex++;
+                }
+                break;
             }
-            return cellByRowCol[row][col];
+            boolean included = matchedCheck != null && matchedCheck.checked;
+
+            // Form number
+            SliceResult formResult = consumeContentWithin(formSlices, formIndex, docTop, docBottom);
+            ContentSlice formSlice = formResult.slice;
+            formIndex = formResult.nextIndex;
+
+            // Delivery requirement
+            SliceResult deliveryResult = consumeContentWithin(deliverySlices, deliveryIndex, docTop, docBottom);
+            ContentSlice deliverySlice = deliveryResult.slice;
+            deliveryIndex = deliveryResult.nextIndex;
+
+            RowRecord record = new RowRecord(included,
+                tabText,
+                docSlice.text,
+                formSlice != null ? formSlice.text : "",
+                deliverySlice != null ? deliverySlice.text : "",
+                false,
+                false);
+
+            ordered.add(new OrderedRecord(record, docSlice.getVisualTop()));
+            docIndex++;
         }
+
+        ordered.sort(Comparator.comparingDouble(o -> o.visualTop));
+        List<RowRecord> records = new ArrayList<>(ordered.size());
+        for (OrderedRecord holder : ordered) {
+            records.add(holder.record);
+        }
+        return records;
     }
 
-    private static final class Cell {
-        final Rect bounds;
-        final int rowStart;
-        final int rowEnd;
-        final int colStart;
-        final int colEnd;
-        final List<TextFragment> fragments = new ArrayList<>();
-        final List<Rect> checkboxRects = new ArrayList<>();
-
-        Cell(Rect bounds, int rowStart, int rowEnd, int colStart, int colEnd) {
-            this.bounds = bounds;
-            this.rowStart = Math.max(0, rowStart);
-            this.rowEnd = Math.max(this.rowStart, rowEnd);
-            this.colStart = Math.max(0, colStart);
-            this.colEnd = Math.max(this.colStart, colEnd);
+    private static SliceResult consumeContentWithin(List<ContentSlice> slices, int startIndex, double docTop, double docBottom) {
+        int index = startIndex;
+        while (index < slices.size()) {
+            ContentSlice slice = slices.get(index);
+            if (slice.bottom <= docTop - RANGE_TOLERANCE) {
+                index++;
+                continue;
+            }
+            if (slice.top >= docBottom + RANGE_TOLERANCE) {
+                return new SliceResult(null, index);
+            }
+            double overlap = overlapAmount(docTop, docBottom, slice.top, slice.bottom);
+            double sliceHeight = Math.max(1.0, slice.bottom - slice.top);
+            if (rangeContains(docTop, docBottom, slice.top, slice.bottom) || (overlap / sliceHeight) >= 0.65) {
+                return new SliceResult(slice, index + 1);
+            }
+            return new SliceResult(null, index);
         }
-
-        void addFragment(TextFragment fragment) {
-            fragments.add(fragment);
-        }
-
-        void addCheckbox(Rect rect) {
-            checkboxRects.add(rect);
-        }
+        return new SliceResult(null, index);
     }
 
-    private static final class RowData {
-        final int index;
-        final String[] textByColumn;
-        boolean included;
-        boolean headerRow;
-        boolean sectionRow;
-
-        RowData(int index, int columnCount) {
-            this.index = index;
-            this.textByColumn = new String[columnCount];
+    private static BannerType classifyBanner(ContentSlice slice, TableGrid grid) {
+        String text = slice.text;
+        String normalizedUpper = text.toUpperCase(Locale.ROOT);
+        boolean fullSpan = slice.cell.colStart == 0 && slice.cell.colEnd >= grid.colCount - 1;
+        if (text.contains("DELIVERY PACKAGE CONTENT")) {
+            return BannerType.HEADER;
         }
-
-        void set(ColumnType column, String value) {
-            int idx = column.ordinal();
-            if (idx >= 0 && idx < textByColumn.length) {
-                textByColumn[idx] = normalize(value);
-            }
+        if (normalizedUpper.equals(text) && text.length() > 4 && fullSpan) {
+            return BannerType.SECTION;
         }
-
-        String get(ColumnType column) {
-            int idx = column.ordinal();
-            if (idx < 0 || idx >= textByColumn.length) {
-                return "";
-            }
-            return textByColumn[idx] == null ? "" : textByColumn[idx];
+        if (normalizedUpper.equals(text) && text.contains("DOCUMENT") && slice.cell.colStart <= ColumnType.DOCUMENT.ordinal()) {
+            return BannerType.SECTION;
         }
-    }
-
-    private static final class TextFragment {
-        final Rect rect;
-        final String text;
-
-        TextFragment(Rect rect, String text) {
-            this.rect = rect;
-            this.text = normalize(text);
-        }
+        return BannerType.NONE;
     }
 
     private void assignContent(TableGrid grid,
@@ -451,124 +457,31 @@ public final class ExtractTableOfContents {
             if (rowIndex < 0 || rowIndex >= grid.rowCount || colIndex < 0 || colIndex >= grid.colCount) {
                 continue;
             }
-            Cell cell = grid.cellAt(rowIndex, colIndex);
+            ColumnType columnType = ColumnType.values()[Math.min(colIndex, ColumnType.values().length - 1)];
+            Cell cell = grid.cellAt(rowIndex, columnType);
             if (cell == null) {
                 continue;
             }
 
             if (isCheckboxCandidate(rect)) {
                 boolean checked = isCheckboxMarked(gray, rect);
-                if (checked) {
-                    markRowsIncluded(grid, cell, true);
-                }
-                cell.addCheckbox(rect);
-                if (!checked) {
-                    markRowsIncluded(grid, cell, false);
-                }
+                cell.addCheckbox(new CheckboxFragment(rect, checked));
                 continue;
             }
 
-            String text = performOcr(contentMat, rect);
-            if (text.isBlank()) {
+            String ocr;
+            if (columnType == ColumnType.TAB) {
+                System.out.println("[ExtractTableOfContents] OCR tab ROI: " + rect);
+                ocr = performOcr(contentMat, rect);
+                System.out.println("[ExtractTableOfContents] OCR tab result: '" + ocr + "'");
+            } else {
+                ocr = performOcr(contentMat, rect);
+            }
+            if (ocr.isBlank()) {
                 continue;
             }
-            TextFragment fragment = new TextFragment(rect, text);
-            cell.addFragment(fragment);
+            cell.addFragment(new TextFragment(rect, ocr));
         }
-
-        for (int row = 0; row < grid.rowCount; row++) {
-            for (ColumnType column : ColumnType.values()) {
-                if (column.ordinal() >= grid.colCount) {
-                    continue;
-                }
-                Cell cell = grid.cellAt(row, column.ordinal());
-                if (cell == null) {
-                    continue;
-                }
-                String combined = combineText(cell.fragments);
-                grid.rows[row].set(column, combined);
-            }
-        }
-
-        classifyRows(grid);
-    }
-
-    private static void classifyRows(TableGrid grid) {
-        for (RowData row : grid.rows) {
-            String document = row.get(ColumnType.DOCUMENT);
-            String tab = row.get(ColumnType.TAB);
-            boolean fullSpan = true;
-            for (int c = 0; c < grid.colCount; c++) {
-                if (grid.cellAt(row.index, c) == null) {
-                    fullSpan = false;
-                    break;
-                }
-            }
-            boolean uppercaseDoc = !document.isBlank() && document.equals(document.toUpperCase(Locale.ROOT));
-            if (row.index == 0 && document.contains("DELIVERY PACKAGE CONTENT")) {
-                row.headerRow = true;
-            } else if (uppercaseDoc && fullSpan) {
-                row.sectionRow = true;
-            } else if (document.contains("DOCUMENTS") && tab.contains("TAB")) {
-                row.headerRow = true;
-            }
-        }
-    }
-
-    private static void propagateMergedCellText(TableGrid grid, ColumnType column) {
-        int columnIndex = column.ordinal();
-        if (columnIndex >= grid.colCount) {
-            return;
-        }
-        for (int row = 0; row < grid.rowCount; row++) {
-            Cell cell = grid.cellAt(row, columnIndex);
-            if (cell == null) {
-                continue;
-            }
-            if (cell.rowStart == cell.rowEnd) {
-                continue;
-            }
-            String text = combineText(cell.fragments);
-            if (text.isEmpty()) {
-                continue;
-            }
-            for (int r = cell.rowStart; r <= cell.rowEnd; r++) {
-                grid.rows[r].set(column, text);
-            }
-        }
-    }
-
-    private static List<RowRecord> assembleRecords(TableGrid grid) {
-        List<RowRecord> records = new ArrayList<>();
-        for (RowData row : grid.rows) {
-            if (row.headerRow || row.sectionRow) {
-                records.add(new RowRecord(false,
-                    row.get(ColumnType.TAB),
-                    row.get(ColumnType.DOCUMENT),
-                    row.get(ColumnType.FORM_NUMBER),
-                    row.get(ColumnType.DELIVERY_REQUIREMENT),
-                    row.headerRow,
-                    row.sectionRow));
-                continue;
-            }
-
-            boolean hasData = Arrays.stream(ColumnType.values())
-                .filter(type -> type != ColumnType.CHECK_INCLUDED)
-                .anyMatch(type -> !row.get(type).isEmpty());
-
-            if (!hasData && !row.included) {
-                continue;
-            }
-
-            records.add(new RowRecord(row.included,
-                row.get(ColumnType.TAB),
-                row.get(ColumnType.DOCUMENT),
-                row.get(ColumnType.FORM_NUMBER),
-                row.get(ColumnType.DELIVERY_REQUIREMENT),
-                false,
-                false));
-        }
-        return records;
     }
 
     private Mat toGray(Mat source) {
@@ -581,51 +494,6 @@ public final class ExtractTableOfContents {
             Imgproc.cvtColor(source, gray, Imgproc.COLOR_BGRA2GRAY);
         }
         return gray;
-    }
-
-    private static boolean intersects(Rect rect, Rect bounds, int margin) {
-        return rect.x + rect.width > bounds.x - margin &&
-            rect.x < bounds.x + bounds.width + margin &&
-            rect.y + rect.height > bounds.y - margin &&
-            rect.y < bounds.y + bounds.height + margin;
-    }
-
-    private static boolean isCheckboxCandidate(Rect rect) {
-        if (rect.width <= 0 || rect.height <= 0) {
-            return false;
-        }
-        double area = rect.width * rect.height;
-        if (area < CHECKBOX_MIN_AREA) {
-            return false;
-        }
-        double aspect = rect.width / (double) rect.height;
-        return aspect > (1.0 - CHECKBOX_ASPECT_TOL) && aspect < (1.0 + CHECKBOX_ASPECT_TOL);
-    }
-
-    private static boolean isCheckboxMarked(Mat gray, Rect rect) {
-        Rect roi = clampRect(rect, gray, 1);
-        Mat sub = new Mat(gray, roi);
-        Mat blurred = new Mat();
-        Imgproc.GaussianBlur(sub, blurred, new Size(3, 3), 0);
-        Mat binary = new Mat();
-        Imgproc.threshold(blurred, binary, 0, 255, Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU);
-        double ink = Core.sumElems(binary).val[0] / 255.0;
-        double pixels = binary.total();
-        double ratio = pixels == 0 ? 0 : ink / pixels;
-        sub.release();
-        blurred.release();
-        binary.release();
-        return ratio >= CHECKBOX_INK_RATIO;
-    }
-
-    private void markRowsIncluded(TableGrid grid, Cell cell, boolean checked) {
-        for (int r = cell.rowStart; r <= cell.rowEnd && r < grid.rowCount; r++) {
-            if (checked) {
-                grid.rows[r].included = true;
-            } else if (!grid.rows[r].included) {
-                grid.rows[r].included = false;
-            }
-        }
     }
 
     private String performOcr(Mat source, Rect rect) {
@@ -668,6 +536,446 @@ public final class ExtractTableOfContents {
         System.arraycopy(source, 0, target, 0, source.length);
         converted.release();
         return image;
+    }
+
+    private static boolean intersects(Rect rect, Rect bounds, int margin) {
+        return rect.x + rect.width > bounds.x - margin &&
+            rect.x < bounds.x + bounds.width + margin &&
+            rect.y + rect.height > bounds.y - margin &&
+            rect.y < bounds.y + bounds.height + margin;
+    }
+
+    private static boolean isCheckboxCandidate(Rect rect) {
+        if (rect.width <= 0 || rect.height <= 0) {
+            return false;
+        }
+        double area = rect.width * rect.height;
+        if (area < CHECKBOX_MIN_AREA) {
+            return false;
+        }
+        double aspect = rect.width / (double) rect.height;
+        return aspect > (1.0 - CHECKBOX_ASPECT_TOL) && aspect < (1.0 + CHECKBOX_ASPECT_TOL);
+    }
+
+    private static boolean isCheckboxMarked(Mat gray, Rect rect) {
+        Rect roi = clampRect(rect, gray, 1);
+        Mat sub = new Mat(gray, roi);
+        Mat blurred = new Mat();
+        Imgproc.GaussianBlur(sub, blurred, new Size(3, 3), 0);
+        Mat binary = new Mat();
+        Imgproc.threshold(blurred, binary, 0, 255, Imgproc.THRESH_BINARY_INV + Imgproc.THRESH_OTSU);
+        double ink = Core.sumElems(binary).val[0] / 255.0;
+        double pixels = binary.total();
+        double ratio = pixels == 0 ? 0 : ink / pixels;
+        sub.release();
+        blurred.release();
+        binary.release();
+        return ratio >= CHECKBOX_INK_RATIO;
+    }
+
+    private static String normalize(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+        String[] lines = trimmed.split("\\R+");
+        StringBuilder builder = new StringBuilder();
+        for (String line : lines) {
+            String normalized = line.replaceAll("\\s+", " ").trim();
+            if (normalized.isEmpty()) {
+                continue;
+            }
+            if (builder.length() > 0) {
+                builder.append('\n');
+            }
+            builder.append(normalized);
+        }
+        return builder.toString();
+    }
+
+    private static boolean rangeContains(double containerTop, double containerBottom, double itemTop, double itemBottom) {
+        return itemTop >= containerTop - RANGE_TOLERANCE && itemBottom <= containerBottom + RANGE_TOLERANCE;
+    }
+
+    private static boolean rangesOverlap(double topA, double bottomA, double topB, double bottomB) {
+        return Math.max(topA, topB) <= Math.min(bottomA, bottomB);
+    }
+
+    private static double overlapAmount(double topA, double bottomA, double topB, double bottomB) {
+        double top = Math.max(topA, topB);
+        double bottom = Math.min(bottomA, bottomB);
+        return Math.max(0.0, bottom - top);
+    }
+
+    private static boolean pointWithin(double point, double rangeTop, double rangeBottom) {
+        return point >= rangeTop - RANGE_TOLERANCE && point <= rangeBottom + RANGE_TOLERANCE;
+    }
+
+    private static int locateInterval(double[] edges, double value) {
+        if (edges.length < 2) {
+            return -1;
+        }
+        if (value < edges[0]) {
+            return 0;
+        }
+        if (value >= edges[edges.length - 1]) {
+            return edges.length - 2;
+        }
+        for (int i = 0; i < edges.length - 1; i++) {
+            if (value >= edges[i] && value < edges[i + 1]) {
+                return i;
+            }
+        }
+        return edges.length - 2;
+    }
+
+    private enum BannerType {
+        NONE,
+        HEADER,
+        SECTION
+    }
+
+    private static final class SliceResult {
+        final ContentSlice slice;
+        final int nextIndex;
+
+        SliceResult(ContentSlice slice, int nextIndex) {
+            this.slice = slice;
+            this.nextIndex = nextIndex;
+        }
+    }
+
+    private static final class OrderedRecord {
+        final RowRecord record;
+        final double visualTop;
+
+        OrderedRecord(RowRecord record, double visualTop) {
+            this.record = record;
+            this.visualTop = visualTop;
+        }
+    }
+
+    private static final class ColumnSlices {
+        final List<ContentSlice> tabSlices;
+        final List<ContentSlice> documentSlices;
+        final List<ContentSlice> formSlices;
+        final List<ContentSlice> deliverySlices;
+        final List<CheckboxSlice> checkSlices;
+
+        ColumnSlices(List<ContentSlice> tabSlices,
+                     List<ContentSlice> documentSlices,
+                     List<ContentSlice> formSlices,
+                     List<ContentSlice> deliverySlices,
+                     List<CheckboxSlice> checkSlices) {
+            this.tabSlices = tabSlices;
+            this.documentSlices = documentSlices;
+            this.formSlices = formSlices;
+            this.deliverySlices = deliverySlices;
+            this.checkSlices = checkSlices;
+        }
+
+        static ColumnSlices build(TableGrid grid) {
+            Map<ColumnType, List<ContentSlice>> textSlices = new EnumMap<>(ColumnType.class);
+            for (ColumnType type : ColumnType.values()) {
+                if (type == ColumnType.CHECK_INCLUDED) {
+                    continue;
+                }
+                textSlices.put(type, collectTextSlices(grid, type));
+            }
+            List<CheckboxSlice> checkSlices = collectCheckboxSlices(grid);
+            return new ColumnSlices(
+                textSlices.getOrDefault(ColumnType.TAB, Collections.emptyList()),
+                textSlices.getOrDefault(ColumnType.DOCUMENT, Collections.emptyList()),
+                textSlices.getOrDefault(ColumnType.FORM_NUMBER, Collections.emptyList()),
+                textSlices.getOrDefault(ColumnType.DELIVERY_REQUIREMENT, Collections.emptyList()),
+                checkSlices
+            );
+        }
+
+        private static List<ContentSlice> collectTextSlices(TableGrid grid, ColumnType column) {
+            List<Cell> cells = grid.cellsForColumn(column);
+            List<ContentSlice> slices = new ArrayList<>();
+            for (Cell cell : cells) {
+                List<TextFragment> fragments = new ArrayList<>(cell.fragments);
+                fragments.sort(Comparator.comparingInt(fragment -> fragment.rect.y));
+                if (fragments.isEmpty()) {
+                    if (column == ColumnType.TAB) {
+                        double top = cell.bounds.y;
+                        double bottom = cell.bounds.y + cell.bounds.height;
+                        slices.add(new ContentSlice(cell, "", top, bottom, new Rect(cell.bounds.x, cell.bounds.y, cell.bounds.width, cell.bounds.height)));
+                    }
+                    continue;
+                }
+                for (int i = 0; i < fragments.size(); i++) {
+                    TextFragment fragment = fragments.get(i);
+                    Rect rect = fragment.rect;
+                    double top = rect.y;
+                    double nextTop = cell.bounds.y + cell.bounds.height;
+                    if (i + 1 < fragments.size()) {
+                        nextTop = fragments.get(i + 1).rect.y;
+                    }
+                    double bottom = Math.max(rect.y + rect.height, nextTop);
+                    bottom = Math.min(bottom, cell.bounds.y + cell.bounds.height);
+                    slices.add(new ContentSlice(cell, fragment.text, top, bottom, rect));
+                }
+            }
+            slices.sort(Comparator.comparingDouble(slice -> slice.top));
+            return slices;
+        }
+
+        private static List<CheckboxSlice> collectCheckboxSlices(TableGrid grid) {
+            List<Cell> cells = grid.cellsForColumn(ColumnType.CHECK_INCLUDED);
+            List<CheckboxSlice> slices = new ArrayList<>();
+            for (Cell cell : cells) {
+                List<CheckboxFragment> fragments = new ArrayList<>(cell.checkboxes);
+                fragments.sort(Comparator.comparingInt(fragment -> fragment.rect.y));
+                for (int i = 0; i < fragments.size(); i++) {
+                    CheckboxFragment fragment = fragments.get(i);
+                    Rect rect = fragment.rect;
+                    double top = rect.y;
+                    double nextTop = cell.bounds.y + cell.bounds.height;
+                    if (i + 1 < fragments.size()) {
+                        nextTop = fragments.get(i + 1).rect.y;
+                    }
+                    double bottom = Math.max(rect.y + rect.height, nextTop);
+                    bottom = Math.min(bottom, cell.bounds.y + cell.bounds.height);
+                    slices.add(new CheckboxSlice(cell, fragment.checked, top, bottom, rect));
+                }
+            }
+            slices.sort(Comparator.comparingDouble(slice -> slice.top));
+            return slices;
+        }
+    }
+
+    private static final class ContentSlice {
+        final Cell cell;
+        final String text;
+        final double top;
+        final double bottom;
+        final Rect rect;
+
+        ContentSlice(Cell cell, String text, double top, double bottom, Rect rect) {
+            this.cell = cell;
+            this.text = text == null ? "" : text;
+            this.top = top;
+            this.bottom = Math.max(bottom, top + 1.0);
+            this.rect = rect;
+        }
+
+        double getCellTop() {
+            return cell.bounds.y;
+        }
+
+        double getCellBottom() {
+            return cell.bounds.y + cell.bounds.height;
+        }
+
+        double getVisualTop() {
+            return rect.y;
+        }
+    }
+
+    private static final class CheckboxSlice {
+        final Cell cell;
+        final boolean checked;
+        final double top;
+        final double bottom;
+        final Rect rect;
+
+        CheckboxSlice(Cell cell, boolean checked, double top, double bottom, Rect rect) {
+            this.cell = cell;
+            this.checked = checked;
+            this.top = top;
+            this.bottom = Math.max(bottom, top + 1.0);
+            this.rect = rect;
+        }
+
+        double center() {
+            return (top + bottom) / 2.0;
+        }
+    }
+
+    private static final class TableGrid {
+        final double[] rowEdges;
+        final double[] colEdges;
+        final int rowCount;
+        final int colCount;
+        final Rect bounds;
+        final Cell[][] matrix;
+        final List<Cell> cells;
+
+        static TableGrid fromContours(List<MatOfPoint> contours) {
+            List<Rect> rects = new ArrayList<>();
+            for (MatOfPoint contour : contours) {
+                Rect rect = Imgproc.boundingRect(contour);
+                if (rect.width > 0 && rect.height > 0) {
+                    rects.add(rect);
+                }
+            }
+            if (rects.isEmpty()) {
+                return new TableGrid(new double[0], new double[0], new Rect(), new Cell[0][0], new ArrayList<>());
+            }
+
+            double minX = Double.MAX_VALUE;
+            double minY = Double.MAX_VALUE;
+            double maxX = Double.MIN_VALUE;
+            double maxY = Double.MIN_VALUE;
+            double[] heights = new double[rects.size()];
+            double[] widths = new double[rects.size()];
+            List<Double> rowEdges = new ArrayList<>();
+            List<Double> colEdges = new ArrayList<>();
+
+            for (int i = 0; i < rects.size(); i++) {
+                Rect rect = rects.get(i);
+                heights[i] = rect.height;
+                widths[i] = rect.width;
+                double top = rect.y;
+                double bottom = rect.y + rect.height;
+                double left = rect.x;
+                double right = rect.x + rect.width;
+                rowEdges.add(top);
+                rowEdges.add(bottom);
+                colEdges.add(left);
+                colEdges.add(right);
+                minX = Math.min(minX, left);
+                minY = Math.min(minY, top);
+                maxX = Math.max(maxX, right);
+                maxY = Math.max(maxY, bottom);
+            }
+
+            double medianHeight = median(heights);
+            double medianWidth = median(widths);
+            double rowTolerance = Math.max(MIN_EDGE_TOLERANCE, medianHeight * EDGE_TOLERANCE_FACTOR);
+            double colTolerance = Math.max(MIN_EDGE_TOLERANCE, medianWidth * EDGE_TOLERANCE_FACTOR);
+
+            double[] rowBoundaries = clusterEdges(rowEdges, rowTolerance, minY, maxY);
+            double[] colBoundaries = clusterEdges(colEdges, colTolerance, minX, maxX);
+
+            Rect bounds = new Rect(
+                (int) Math.floor(minX),
+                (int) Math.floor(minY),
+                (int) Math.ceil(Math.max(1.0, maxX - minX)),
+                (int) Math.ceil(Math.max(1.0, maxY - minY))
+            );
+
+            int rowCount = Math.max(0, rowBoundaries.length - 1);
+            int colCount = Math.max(0, colBoundaries.length - 1);
+            Cell[][] matrix = new Cell[rowCount][colCount];
+            List<Cell> cells = new ArrayList<>();
+            Set<Cell> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+
+            for (Rect rect : rects) {
+                int rowStart = locateInterval(rowBoundaries, rect.y + 1e-3);
+                int rowEnd = locateInterval(rowBoundaries, rect.y + rect.height - 1e-3);
+                int colStart = locateInterval(colBoundaries, rect.x + 1e-3);
+                int colEnd = locateInterval(colBoundaries, rect.x + rect.width - 1e-3);
+
+                Cell cell = new Cell(rect, rowStart, rowEnd, colStart, colEnd);
+                cells.add(cell);
+                for (int r = rowStart; r <= rowEnd; r++) {
+                    for (int c = colStart; c <= colEnd; c++) {
+                        if (r >= 0 && r < rowCount && c >= 0 && c < colCount) {
+                            matrix[r][c] = cell;
+                        }
+                    }
+                }
+            }
+
+            return new TableGrid(rowBoundaries, colBoundaries, bounds, matrix, cells);
+        }
+
+        private TableGrid(double[] rowEdges,
+                           double[] colEdges,
+                           Rect bounds,
+                           Cell[][] matrix,
+                           List<Cell> cells) {
+            this.rowEdges = rowEdges;
+            this.colEdges = colEdges;
+            this.bounds = bounds;
+            this.matrix = matrix;
+            this.cells = cells;
+            this.rowCount = rowEdges.length > 0 ? rowEdges.length - 1 : 0;
+            this.colCount = colEdges.length > 0 ? colEdges.length - 1 : 0;
+        }
+
+        boolean isEmpty() {
+            return rowCount == 0 || colCount == 0;
+        }
+
+        Cell cellAt(int row, ColumnType column) {
+            int colIndex = column.ordinal();
+            if (row < 0 || row >= rowCount || colIndex < 0 || colIndex >= colCount) {
+                return null;
+            }
+            return matrix[row][colIndex];
+        }
+
+        List<Cell> cellsForColumn(ColumnType column) {
+            int colIndex = column.ordinal();
+            List<Cell> result = new ArrayList<>();
+            Set<Cell> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+            for (int r = 0; r < rowCount; r++) {
+                if (colIndex < 0 || colIndex >= colCount) {
+                    continue;
+                }
+                Cell cell = matrix[r][colIndex];
+                if (cell != null && !seen.contains(cell)) {
+                    seen.add(cell);
+                    result.add(cell);
+                }
+            }
+            result.sort(Comparator.comparingInt(cell -> cell.bounds.y));
+            return result;
+        }
+    }
+
+    private static final class Cell {
+        final Rect bounds;
+        final int rowStart;
+        final int rowEnd;
+        final int colStart;
+        final int colEnd;
+        final List<TextFragment> fragments = new ArrayList<>();
+        final List<CheckboxFragment> checkboxes = new ArrayList<>();
+
+        Cell(Rect bounds, int rowStart, int rowEnd, int colStart, int colEnd) {
+            this.bounds = bounds;
+            this.rowStart = Math.max(0, rowStart);
+            this.rowEnd = Math.max(this.rowStart, rowEnd);
+            this.colStart = Math.max(0, colStart);
+            this.colEnd = Math.max(this.colStart, colEnd);
+        }
+
+        void addFragment(TextFragment fragment) {
+            fragments.add(fragment);
+        }
+
+        void addCheckbox(CheckboxFragment fragment) {
+            checkboxes.add(fragment);
+        }
+    }
+
+    private static final class TextFragment {
+        final Rect rect;
+        final String text;
+
+        TextFragment(Rect rect, String text) {
+            this.rect = rect;
+            this.text = text;
+        }
+    }
+
+    private static final class CheckboxFragment {
+        final Rect rect;
+        final boolean checked;
+
+        CheckboxFragment(Rect rect, boolean checked) {
+            this.rect = rect;
+            this.checked = checked;
+        }
     }
 
     private static double median(double[] values) {
@@ -713,82 +1021,5 @@ public final class ExtractTableOfContents {
             result[i] = clusters.get(i);
         }
         return result;
-    }
-
-    private static int locateInterval(double[] edges, double value) {
-        if (edges.length < 2) {
-            return -1;
-        }
-        if (value < edges[0]) {
-            return 0;
-        }
-        if (value >= edges[edges.length - 1]) {
-            return edges.length - 2;
-        }
-        for (int i = 0; i < edges.length - 1; i++) {
-            if (value >= edges[i] && value < edges[i + 1]) {
-                return i;
-            }
-        }
-        return edges.length - 2;
-    }
-
-    private static String combineText(List<TextFragment> fragments) {
-        if (fragments.isEmpty()) {
-            return "";
-        }
-        return fragments.stream()
-            .sorted(Comparator.comparingInt(fragment -> fragment.rect.y))
-            .map(fragment -> fragment.text)
-            .filter(text -> !text.isBlank())
-            .collect(Collectors.joining("\n"));
-    }
-
-    private static String normalize(String text) {
-        if (text == null) {
-            return "";
-        }
-        String trimmed = text.trim();
-        if (trimmed.isEmpty()) {
-            return "";
-        }
-        String[] lines = trimmed.split("\\R+");
-        StringBuilder builder = new StringBuilder();
-        for (String line : lines) {
-            String normalized = line.replaceAll("\\s+", " ").trim();
-            if (normalized.isEmpty()) {
-                continue;
-            }
-            if (builder.length() > 0) {
-                builder.append('\n');
-            }
-            builder.append(normalized);
-        }
-        return builder.toString();
-    }
-
-    private static String buildBorder(int[] widths) {
-        StringBuilder builder = new StringBuilder();
-        builder.append("+");
-        for (int width : widths) {
-            builder.append("-");
-            for (int i = 0; i < width; i++) {
-                builder.append("-");
-            }
-            builder.append("-");
-            builder.append("+");
-        }
-        return builder.toString();
-    }
-
-    private static String pad(String text, int width) {
-        if (text.length() >= width) {
-            return text;
-        }
-        StringBuilder builder = new StringBuilder(text);
-        while (builder.length() < width) {
-            builder.append(' ');
-        }
-        return builder.toString();
     }
 }
