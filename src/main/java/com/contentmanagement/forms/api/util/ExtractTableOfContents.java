@@ -6,20 +6,21 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import net.sourceforge.tess4j.Tesseract;
-import net.sourceforge.tess4j.TesseractException;
+
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.Rect;
 import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
+
+import net.sourceforge.tess4j.Tesseract;
+import net.sourceforge.tess4j.TesseractException;
 
 public final class ExtractTableOfContents {
 
@@ -30,6 +31,7 @@ public final class ExtractTableOfContents {
     private static final double CHECKBOX_ASPECT_TOL = 0.35;
     private static final double CHECKBOX_MIN_AREA = 36.0;
     private static final double CHECKBOX_INK_RATIO = 0.08;
+    private static final double BAND_MARGIN_FACTOR = 0.15;
 
     private final Tesseract OCREngine;
 
@@ -54,10 +56,10 @@ public final class ExtractTableOfContents {
         GridModel grid = buildGridModel(cellRects);
         CellGrid cellGrid = buildCellGrid(grid, cellRects);
         List<RowSlice> rowSlices = createRowSlices(grid);
-        assignContent(rowSlices, cellGrid, grid, contentMat, contentContours);
-        ColumnModel columnModel = inferColumns(rowSlices, grid.colCount);
-        propagateText(rowSlices, columnModel, cellGrid);
-        return assembleRows(rowSlices, columnModel);
+        ContentModel content = assignContent(rowSlices, cellGrid, grid, contentMat, contentContours);
+        ColumnModel columnModel = inferColumns(grid);
+        defineCheckboxBands(content.checkboxes, grid);
+        return assembleRows(rowSlices, columnModel, grid, cellGrid, content);
     }
 
     public static final class RowRecord {
@@ -66,13 +68,23 @@ public final class ExtractTableOfContents {
         private final String document;
         private final String formNumber;
         private final String deliveryRequirement;
+        private final boolean headerRow;
+        private final boolean sectionRow;
 
-        RowRecord(boolean included, String tab, String document, String formNumber, String deliveryRequirement) {
+        RowRecord(boolean included,
+                  String tab,
+                  String document,
+                  String formNumber,
+                  String deliveryRequirement,
+                  boolean headerRow,
+                  boolean sectionRow) {
             this.included = included;
             this.tab = documentOrEmpty(tab);
             this.document = documentOrEmpty(document);
             this.formNumber = documentOrEmpty(formNumber);
             this.deliveryRequirement = documentOrEmpty(deliveryRequirement);
+            this.headerRow = headerRow;
+            this.sectionRow = sectionRow;
         }
 
         public boolean isIncluded() {
@@ -95,6 +107,14 @@ public final class ExtractTableOfContents {
             return deliveryRequirement;
         }
 
+        public boolean isHeaderRow() {
+            return headerRow;
+        }
+
+        public boolean isSectionRow() {
+            return sectionRow;
+        }
+
         @Override
         public String toString() {
             return "RowRecord{" +
@@ -103,6 +123,8 @@ public final class ExtractTableOfContents {
                 ", document='" + document + '\'' +
                 ", formNumber='" + formNumber + '\'' +
                 ", deliveryRequirement='" + deliveryRequirement + '\'' +
+                ", headerRow=" + headerRow +
+                ", sectionRow=" + sectionRow +
                 '}';
         }
 
@@ -143,12 +165,18 @@ public final class ExtractTableOfContents {
         final int colCount;
         final Cell[][] cellByRowCol;
         final List<Cell> cells;
+        final boolean[] rowHasFullWidthCell;
 
-        CellGrid(int rowCount, int colCount, Cell[][] cellByRowCol, List<Cell> cells) {
+        CellGrid(int rowCount,
+                 int colCount,
+                 Cell[][] cellByRowCol,
+                 List<Cell> cells,
+                 boolean[] rowHasFullWidthCell) {
             this.rowCount = rowCount;
             this.colCount = colCount;
             this.cellByRowCol = cellByRowCol;
             this.cells = cells;
+            this.rowHasFullWidthCell = rowHasFullWidthCell;
         }
     }
 
@@ -177,8 +205,7 @@ public final class ExtractTableOfContents {
         final int top;
         final int bottom;
         final Map<Integer, List<TextFragment>> fragments = new HashMap<>();
-        final Map<Integer, String> overrides = new HashMap<>();
-        Boolean checkbox;
+        final List<CheckboxObservation> checkboxes = new ArrayList<>();
 
         RowSlice(int index, int top, int bottom) {
             this.index = index;
@@ -193,37 +220,20 @@ public final class ExtractTableOfContents {
             fragments.computeIfAbsent(column, key -> new ArrayList<>()).add(fragment);
         }
 
-        void setOverride(int column, String text) {
-            String normalized = normalizeLines(text);
-            if (!normalized.isBlank()) {
-                overrides.put(column, normalized);
-            }
-        }
-
-        String getRawText(int column) {
-            return combineFragments(fragments.get(column));
-        }
-
-        String getResolvedText(int column) {
-            if (column < 0) {
-                return "";
-            }
-            String override = overrides.get(column);
-            return override != null ? override : getRawText(column);
-        }
-
-        void acceptCheckbox(boolean checked) {
-            if (checkbox == null || checked) {
-                checkbox = checked;
-            }
+        void addCheckbox(CheckboxObservation observation) {
+            checkboxes.add(observation);
         }
 
         boolean hasCheckbox() {
-            return checkbox != null;
+            return !checkboxes.isEmpty();
         }
 
-        boolean checkboxValue() {
-            return Boolean.TRUE.equals(checkbox);
+        List<CheckboxObservation> getCheckboxes() {
+            return checkboxes;
+        }
+
+        String getText(int column) {
+            return combineFragments(fragments.get(column));
         }
     }
 
@@ -234,6 +244,50 @@ public final class ExtractTableOfContents {
         TextFragment(Rect rect, String text) {
             this.rect = rect;
             this.text = text == null ? "" : text;
+        }
+    }
+
+    private static final class CheckboxObservation {
+        final Rect rect;
+        final boolean checked;
+
+        CheckboxObservation(Rect rect, boolean checked) {
+            this.rect = rect;
+            this.checked = checked;
+        }
+
+        double centerY() {
+            return rect.y + rect.height / 2.0;
+        }
+    }
+
+    private static final class CheckboxBand {
+        final RowSlice slice;
+        final CheckboxObservation observation;
+        double bandTop;
+        double bandBottom;
+
+        CheckboxBand(RowSlice slice, CheckboxObservation observation) {
+            this.slice = slice;
+            this.observation = observation;
+        }
+
+        double centerY() {
+            return observation.centerY();
+        }
+
+        boolean isChecked() {
+            return observation.checked;
+        }
+    }
+
+    private static final class ContentModel {
+        final List<List<TextFragment>> columnFragments;
+        final List<CheckboxBand> checkboxes;
+
+        ContentModel(List<List<TextFragment>> columnFragments, List<CheckboxBand> checkboxes) {
+            this.columnFragments = columnFragments;
+            this.checkboxes = checkboxes;
         }
     }
 
@@ -267,6 +321,59 @@ public final class ExtractTableOfContents {
 
         boolean shouldPropagate() {
             return propagate;
+        }
+    }
+
+    private static final class DataRow {
+        final CheckboxBand band;
+        final boolean included;
+        String tab;
+        String document;
+        String formNumber;
+        String deliveryRequirement;
+
+        DataRow(CheckboxBand band, boolean included) {
+            this.band = band;
+            this.included = included;
+        }
+
+        RowRecord toRecord() {
+            return new RowRecord(included, tab, document, formNumber, deliveryRequirement, false, false);
+        }
+
+        String getField(ColumnType type) {
+            switch (type) {
+                case TAB:
+                    return tab;
+                case DOCUMENT:
+                    return document;
+                case FORM_NUMBER:
+                    return formNumber;
+                case DELIVERY_REQUIREMENT:
+                    return deliveryRequirement;
+                default:
+                    return "";
+            }
+        }
+
+        void setField(ColumnType type, String value) {
+            String normalized = normalizeLines(value);
+            switch (type) {
+                case TAB:
+                    tab = normalized;
+                    break;
+                case DOCUMENT:
+                    document = normalized;
+                    break;
+                case FORM_NUMBER:
+                    formNumber = normalized;
+                    break;
+                case DELIVERY_REQUIREMENT:
+                    deliveryRequirement = normalized;
+                    break;
+                default:
+                    break;
+            }
         }
     }
 
@@ -445,7 +552,16 @@ public final class ExtractTableOfContents {
             }
         }
 
-        return new CellGrid(rowCount, colCount, matrix, cells);
+        boolean[] rowHasFullWidthCell = new boolean[rowCount];
+        for (Cell cell : cells) {
+            if (cell.colStart == 0 && cell.colEnd == colCount - 1) {
+                for (int r = cell.rowStart; r <= cell.rowEnd && r < rowCount; r++) {
+                    rowHasFullWidthCell[r] = true;
+                }
+            }
+        }
+
+        return new CellGrid(rowCount, colCount, matrix, cells, rowHasFullWidthCell);
     }
 
     private static int locateInterval(double[] boundaries, double value, double tolerance) {
@@ -495,11 +611,17 @@ public final class ExtractTableOfContents {
         return slices;
     }
 
-    private void assignContent(List<RowSlice> rows,
-                               CellGrid cellGrid,
-                               GridModel grid,
-                               Mat contentMat,
-                               List<MatOfPoint> contentContours) {
+    private ContentModel assignContent(List<RowSlice> rows,
+                                       CellGrid cellGrid,
+                                       GridModel grid,
+                                       Mat contentMat,
+                                       List<MatOfPoint> contentContours) {
+        List<List<TextFragment>> columnFragments = new ArrayList<>(grid.colCount);
+        for (int i = 0; i < grid.colCount; i++) {
+            columnFragments.add(new ArrayList<>());
+        }
+        List<CheckboxBand> checkboxBands = new ArrayList<>();
+
         Mat gray = toGray(contentMat);
         for (MatOfPoint contour : contentContours) {
             Rect rect = Imgproc.boundingRect(contour);
@@ -524,7 +646,9 @@ public final class ExtractTableOfContents {
 
             if (isCheckboxCandidate(rect, grid.medianRowHeight)) {
                 boolean checked = isCheckboxMarked(gray, rect);
-                slice.acceptCheckbox(checked);
+                CheckboxObservation observation = new CheckboxObservation(rect, checked);
+                slice.addCheckbox(observation);
+                checkboxBands.add(new CheckboxBand(slice, observation));
                 continue;
             }
 
@@ -538,8 +662,11 @@ public final class ExtractTableOfContents {
             if (cell != null) {
                 cell.addFragment(colIndex, fragment);
             }
+            columnFragments.get(colIndex).add(fragment);
         }
         gray.release();
+
+        return new ContentModel(columnFragments, checkboxBands);
     }
 
     private static Cell findCell(List<Cell> cells, Rect rect, double centerX, double centerY) {
@@ -674,224 +801,289 @@ public final class ExtractTableOfContents {
         return image;
     }
 
-    private static ColumnModel inferColumns(List<RowSlice> rows, int colCount) {
+    private static ColumnModel inferColumns(GridModel grid) {
+        int colCount = grid.colCount;
         ColumnType[] mapping = new ColumnType[colCount];
-        List<ColumnType> priority = Arrays.asList(
+        ColumnType[] expectedOrder = {
             ColumnType.CHECK_INCLUDED,
             ColumnType.TAB,
             ColumnType.DOCUMENT,
             ColumnType.FORM_NUMBER,
             ColumnType.DELIVERY_REQUIREMENT
-        );
-
-        List<String> headerSamples = collectHeaderSamples(rows, colCount);
-        for (ColumnType type : priority) {
-            int bestColumn = -1;
-            int bestScore = 0;
-            for (int col = 0; col < colCount; col++) {
-                if (mapping[col] != null) {
-                    continue;
-                }
-                int score = scoreColumn(type, headerSamples.get(col));
-                if (score > bestScore) {
-                    bestScore = score;
-                    bestColumn = col;
-                }
-            }
-            if (bestColumn >= 0 && bestScore > 0) {
-                mapping[bestColumn] = type;
-            }
+        };
+        for (int i = 0; i < colCount; i++) {
+            mapping[i] = i < expectedOrder.length ? expectedOrder[i] : ColumnType.UNKNOWN;
         }
-
-        int priorityIndex = 0;
-        for (int col = 0; col < colCount; col++) {
-            if (mapping[col] != null) {
-                continue;
-            }
-            while (priorityIndex < priority.size() && contains(mapping, priority.get(priorityIndex))) {
-                priorityIndex++;
-            }
-            mapping[col] = priorityIndex < priority.size() ? priority.get(priorityIndex++) : ColumnType.UNKNOWN;
-        }
-
         Map<ColumnType, Integer> indexByType = new HashMap<>();
         for (int i = 0; i < mapping.length; i++) {
             indexByType.putIfAbsent(mapping[i], i);
         }
-
         return new ColumnModel(mapping, indexByType);
     }
 
-    private static List<String> collectHeaderSamples(List<RowSlice> rows, int colCount) {
-        List<String> samples = new ArrayList<>();
-        for (int col = 0; col < colCount; col++) {
-            StringBuilder builder = new StringBuilder();
-            int limit = Math.min(2, rows.size());
-            for (int row = 0; row < limit; row++) {
-                String text = rows.get(row).getRawText(col);
-                if (!text.isBlank()) {
-                    if (builder.length() > 0) {
-                        builder.append(' ');
-                    }
-                    builder.append(text);
-                }
-            }
-            samples.add(builder.toString());
+    private static void defineCheckboxBands(List<CheckboxBand> checkboxes, GridModel grid) {
+        if (checkboxes.isEmpty()) {
+            return;
         }
-        return samples;
-    }
+        checkboxes.sort(Comparator.comparingDouble(CheckboxBand::centerY));
+        double margin = Math.max(3.0, grid.medianRowHeight * BAND_MARGIN_FACTOR);
+        for (int i = 0; i < checkboxes.size(); i++) {
+            CheckboxBand current = checkboxes.get(i);
+            double center = current.centerY();
+            double top = current.slice.top - margin;
+            double bottom = current.slice.bottom + margin;
 
-    private static int scoreColumn(ColumnType type, String text) {
-        String upper = text.toUpperCase(Locale.ROOT);
-        int score = 0;
-        switch (type) {
-            case CHECK_INCLUDED:
-                if (upper.contains("CHECK")) {
-                    score += 5;
-                }
-                if (upper.contains("INCLUDE")) {
-                    score += 3;
-                }
-                break;
-            case TAB:
-                if (upper.contains("TAB")) {
-                    score += 6;
-                }
-                if (upper.contains("INDEX")) {
-                    score += 1;
-                }
-                break;
-            case DOCUMENT:
-                if (upper.contains("DOCUMENT")) {
-                    score += 6;
-                } else if (upper.contains("DOC")) {
-                    score += 3;
-                }
-                break;
-            case FORM_NUMBER:
-                if (upper.contains("FORM")) {
-                    score += 5;
-                }
-                if (upper.contains("NUMBER")) {
-                    score += 4;
-                }
-                if (upper.contains("NO.")) {
-                    score += 2;
-                }
-                break;
-            case DELIVERY_REQUIREMENT:
-                if (upper.contains("DELIVERY")) {
-                    score += 6;
-                }
-                if (upper.contains("REQUIRE")) {
-                    score += 4;
-                }
-                if (upper.contains("COPY")) {
-                    score += 1;
-                }
-                break;
-            default:
-                break;
-        }
-        return score;
-    }
+            if (i > 0) {
+                double midpoint = (checkboxes.get(i - 1).centerY() + center) / 2.0;
+                top = Math.max(top, midpoint);
+            }
+            if (i + 1 < checkboxes.size()) {
+                double midpoint = (center + checkboxes.get(i + 1).centerY()) / 2.0;
+                bottom = Math.min(bottom, midpoint);
+            }
 
-    private static boolean contains(ColumnType[] mapping, ColumnType type) {
-        for (ColumnType columnType : mapping) {
-            if (columnType == type) {
-                return true;
+            if (bottom <= top) {
+                bottom = top + Math.max(2.0, grid.medianRowHeight * 0.4);
             }
-        }
-        return false;
-    }
 
-    private static void propagateText(List<RowSlice> rows, ColumnModel columns, CellGrid grid) {
-        for (ColumnType type : EnumSet.of(ColumnType.TAB, ColumnType.DOCUMENT, ColumnType.DELIVERY_REQUIREMENT)) {
-            Integer columnIndex = columns.indexOf(type);
-            if (columnIndex == null) {
-                continue;
-            }
-            for (int r = 0; r < rows.size(); r++) {
-                RowSlice slice = rows.get(r);
-                String text = slice.getResolvedText(columnIndex);
-                if (!text.isBlank()) {
-                    continue;
-                }
-                Cell cell = grid.cellByRowCol[r][columnIndex];
-                if (cell == null) {
-                    continue;
-                }
-                if (cell.rowStart < r) {
-                    String donor = "";
-                    for (int donorRow = cell.rowStart; donorRow <= cell.rowEnd; donorRow++) {
-                        donor = rows.get(donorRow).getResolvedText(columnIndex);
-                        if (!donor.isBlank()) {
-                            break;
-                        }
-                    }
-                    if (donor.isBlank()) {
-                        donor = cell.getText(columnIndex);
-                    }
-                    if (!donor.isBlank()) {
-                        slice.setOverride(columnIndex, donor);
-                    }
-                }
-            }
+            top = Math.max(top, grid.tableBounds.y);
+            bottom = Math.min(bottom, grid.tableBounds.y + grid.tableBounds.height);
+
+            current.bandTop = top;
+            current.bandBottom = bottom;
         }
     }
 
-    private static List<RowRecord> assembleRows(List<RowSlice> rows, ColumnModel columns) {
-        int start = findFirstDataRow(rows, columns);
-        if (start >= rows.size()) {
-            return Collections.emptyList();
-        }
-
-        Integer tabIdx = columns.indexOf(ColumnType.TAB);
-        Integer docIdx = columns.indexOf(ColumnType.DOCUMENT);
-        Integer formIdx = columns.indexOf(ColumnType.FORM_NUMBER);
-        Integer delIdx = columns.indexOf(ColumnType.DELIVERY_REQUIREMENT);
-
+    private static List<RowRecord> assembleRows(List<RowSlice> slices,
+                                                ColumnModel columns,
+                                                GridModel grid,
+                                                CellGrid cellGrid,
+                                                ContentModel content) {
         List<RowRecord> records = new ArrayList<>();
-        for (int i = start; i < rows.size(); i++) {
-            RowSlice row = rows.get(i);
-            String tab = normalizeLines(row.getResolvedText(safeIndex(tabIdx)));
-            String document = normalizeLines(row.getResolvedText(safeIndex(docIdx)));
-            String formNumber = normalizeLines(row.getResolvedText(safeIndex(formIdx)));
-            String delivery = normalizeLines(row.getResolvedText(safeIndex(delIdx)));
-            boolean included = row.hasCheckbox() && row.checkboxValue();
+        int tabIdx = safeIndex(columns.indexOf(ColumnType.TAB));
+        int docIdx = safeIndex(columns.indexOf(ColumnType.DOCUMENT));
+        int formIdx = safeIndex(columns.indexOf(ColumnType.FORM_NUMBER));
+        int deliveryIdx = safeIndex(columns.indexOf(ColumnType.DELIVERY_REQUIREMENT));
 
-            if (tab.isEmpty() && document.isEmpty() && formNumber.isEmpty() && delivery.isEmpty() && !row.hasCheckbox()) {
-                continue;
+        boolean[] headerFlags = identifyHeaderRows(slices, tabIdx, docIdx, grid);
+        boolean[] sectionFlags = identifySectionRows(slices, cellGrid, docIdx, headerFlags);
+
+        Map<Integer, List<DataRow>> dataRowsBySlice = new HashMap<>();
+        List<DataRow> dataRows = new ArrayList<>();
+
+        if (!content.checkboxes.isEmpty()) {
+            for (CheckboxBand band : content.checkboxes) {
+                if (headerFlags[band.slice.index]) {
+                    continue;
+                }
+                DataRow dataRow = buildDataRow(band, content, cellGrid, tabIdx, docIdx, formIdx, deliveryIdx);
+                dataRows.add(dataRow);
+                dataRowsBySlice.computeIfAbsent(band.slice.index, key -> new ArrayList<>()).add(dataRow);
+            }
+            propagateDataRows(dataRows, columns, cellGrid, tabIdx, docIdx, deliveryIdx);
+        }
+
+        for (int i = 0; i < slices.size(); i++) {
+            RowSlice slice = slices.get(i);
+            if (headerFlags[i]) {
+                records.add(new RowRecord(false,
+                    slice.getText(tabIdx),
+                    slice.getText(docIdx),
+                    slice.getText(formIdx),
+                    slice.getText(deliveryIdx),
+                    true,
+                    false));
+            } else if (sectionFlags[i]) {
+                records.add(new RowRecord(false,
+                    slice.getText(tabIdx),
+                    slice.getText(docIdx),
+                    slice.getText(formIdx),
+                    slice.getText(deliveryIdx),
+                    false,
+                    true));
             }
 
-            records.add(new RowRecord(included, tab, document, formNumber, delivery));
+            List<DataRow> rowsForSlice = dataRowsBySlice.get(i);
+            if (rowsForSlice != null) {
+                rowsForSlice.sort(Comparator.comparingDouble(row -> row.band.centerY()));
+                for (DataRow dataRow : rowsForSlice) {
+                    records.add(dataRow.toRecord());
+                }
+            } else if (!headerFlags[i] && !sectionFlags[i]) {
+                String tab = slice.getText(tabIdx);
+                String document = slice.getText(docIdx);
+                String form = slice.getText(formIdx);
+                String delivery = slice.getText(deliveryIdx);
+                if (!tab.isEmpty() || !document.isEmpty() || !form.isEmpty() || !delivery.isEmpty()) {
+                    records.add(new RowRecord(false, tab, document, form, delivery, false, false));
+                }
+            }
         }
+
         return records;
     }
 
-    private static int findFirstDataRow(List<RowSlice> rows, ColumnModel columns) {
-        Integer docIdx = columns.indexOf(ColumnType.DOCUMENT);
-        Integer formIdx = columns.indexOf(ColumnType.FORM_NUMBER);
-        Integer delIdx = columns.indexOf(ColumnType.DELIVERY_REQUIREMENT);
+    private static DataRow buildDataRow(CheckboxBand band,
+                                        ContentModel content,
+                                        CellGrid cellGrid,
+                                        int tabIdx,
+                                        int docIdx,
+                                        int formIdx,
+                                        int deliveryIdx) {
+        DataRow dataRow = new DataRow(band, band.isChecked());
+        double top = band.bandTop;
+        double bottom = band.bandBottom;
 
-        int index = 0;
-        while (index < rows.size()) {
-            RowSlice row = rows.get(index);
-            if (row.hasCheckbox()) {
-                break;
-            }
-            String doc = row.getResolvedText(safeIndex(docIdx)).toUpperCase(Locale.ROOT);
-            String form = row.getResolvedText(safeIndex(formIdx)).toUpperCase(Locale.ROOT);
-            String delivery = row.getResolvedText(safeIndex(delIdx)).toUpperCase(Locale.ROOT);
-            boolean header = (doc.contains("DOCUMENT") && form.contains("FORM")) ||
-                (doc.contains("CHECK") && delivery.contains("DELIVERY")) ||
-                doc.contains("DELIVERY PACKAGE");
-            if (!header) {
-                break;
-            }
-            index++;
+        dataRow.tab = collectBandText(content.columnFragments, tabIdx, top, bottom);
+        dataRow.document = collectBandText(content.columnFragments, docIdx, top, bottom);
+        dataRow.formNumber = collectBandText(content.columnFragments, formIdx, top, bottom);
+        dataRow.deliveryRequirement = collectBandText(content.columnFragments, deliveryIdx, top, bottom);
+
+        if ((dataRow.tab == null || dataRow.tab.isBlank()) && tabIdx >= 0) {
+            dataRow.tab = fallbackFromCell(cellGrid, band.slice.index, tabIdx);
         }
-        return index;
+        if ((dataRow.document == null || dataRow.document.isBlank()) && docIdx >= 0) {
+            dataRow.document = fallbackFromCell(cellGrid, band.slice.index, docIdx);
+        }
+        if ((dataRow.formNumber == null || dataRow.formNumber.isBlank()) && formIdx >= 0) {
+            dataRow.formNumber = fallbackFromCell(cellGrid, band.slice.index, formIdx);
+        }
+        if ((dataRow.deliveryRequirement == null || dataRow.deliveryRequirement.isBlank()) && deliveryIdx >= 0) {
+            dataRow.deliveryRequirement = fallbackFromCell(cellGrid, band.slice.index, deliveryIdx);
+        }
+
+        dataRow.tab = normalizeLines(dataRow.tab);
+        dataRow.document = normalizeLines(dataRow.document);
+        dataRow.formNumber = normalizeLines(dataRow.formNumber);
+        dataRow.deliveryRequirement = normalizeLines(dataRow.deliveryRequirement);
+
+        return dataRow;
+    }
+
+    private static void propagateDataRows(List<DataRow> rows,
+                                          ColumnModel columns,
+                                          CellGrid cellGrid,
+                                          int tabIdx,
+                                          int docIdx,
+                                          int deliveryIdx) {
+        propagateColumn(rows, ColumnType.TAB, tabIdx, cellGrid);
+        propagateColumn(rows, ColumnType.DOCUMENT, docIdx, cellGrid);
+        propagateColumn(rows, ColumnType.DELIVERY_REQUIREMENT, deliveryIdx, cellGrid);
+    }
+
+    private static void propagateColumn(List<DataRow> rows,
+                                        ColumnType type,
+                                        int colIdx,
+                                        CellGrid cellGrid) {
+        if (colIdx < 0) {
+            return;
+        }
+        for (int i = 0; i < rows.size(); i++) {
+            DataRow row = rows.get(i);
+            String value = row.getField(type);
+            if (value != null && !value.isBlank()) {
+                continue;
+            }
+
+            CheckboxBand band = row.band;
+            Cell cell = cellGrid.cellByRowCol[band.slice.index][colIdx];
+            if (cell == null) {
+                continue;
+            }
+
+            if (cell.rowStart < cell.rowEnd) {
+                for (int j = i - 1; j >= 0; j--) {
+                    DataRow candidate = rows.get(j);
+                    if (candidate.band.slice.index >= cell.rowStart && candidate.band.slice.index <= cell.rowEnd) {
+                        String candidateValue = candidate.getField(type);
+                        if (candidateValue != null && !candidateValue.isBlank()) {
+                            row.setField(type, candidateValue);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (row.getField(type) == null || row.getField(type).isBlank()) {
+                String cellText = cell.getText(colIdx);
+                if (cellText != null && !cellText.isBlank()) {
+                    row.setField(type, cellText);
+                }
+            }
+        }
+    }
+
+    private static boolean[] identifyHeaderRows(List<RowSlice> slices,
+                                                int tabIdx,
+                                                int docIdx,
+                                                GridModel grid) {
+        boolean[] header = new boolean[slices.size()];
+        for (int i = 0; i < slices.size(); i++) {
+            RowSlice slice = slices.get(i);
+            String doc = slice.getText(docIdx).toUpperCase(Locale.ROOT);
+            String tab = slice.getText(tabIdx).toUpperCase(Locale.ROOT);
+            if ((doc.contains("DELIVERY PACKAGE CONTENT") || (doc.contains("DOCUMENT") && tab.contains("TAB"))) &&
+                (slice.top - grid.tableBounds.y) < grid.medianRowHeight * 4) {
+                header[i] = true;
+            }
+        }
+        return header;
+    }
+
+    private static boolean[] identifySectionRows(List<RowSlice> slices,
+                                                 CellGrid cellGrid,
+                                                 int docIdx,
+                                                 boolean[] headerFlags) {
+        boolean[] section = new boolean[slices.size()];
+        for (int i = 0; i < slices.size(); i++) {
+            RowSlice slice = slices.get(i);
+            if (headerFlags[i] || slice.hasCheckbox()) {
+                continue;
+            }
+            String doc = slice.getText(docIdx);
+            if (doc.isBlank()) {
+                continue;
+            }
+            boolean looksUpper = doc.equals(doc.toUpperCase(Locale.ROOT)) && doc.length() > 6;
+            if ((cellGrid.rowHasFullWidthCell != null && cellGrid.rowHasFullWidthCell[i]) || looksUpper) {
+                section[i] = true;
+            }
+        }
+        return section;
+    }
+
+    private static String collectBandText(List<List<TextFragment>> columnFragments,
+                                          int columnIndex,
+                                          double bandTop,
+                                          double bandBottom) {
+        if (columnIndex < 0 || columnIndex >= columnFragments.size()) {
+            return "";
+        }
+        List<TextFragment> fragments = columnFragments.get(columnIndex);
+        if (fragments == null || fragments.isEmpty()) {
+            return "";
+        }
+        List<TextFragment> selected = new ArrayList<>();
+        for (TextFragment fragment : fragments) {
+            double center = fragment.rect.y + fragment.rect.height / 2.0;
+            if (center >= bandTop && center <= bandBottom) {
+                selected.add(fragment);
+            } else if (fragment.rect.y >= bandTop && fragment.rect.y + fragment.rect.height <= bandBottom) {
+                selected.add(fragment);
+            }
+        }
+        return combineFragments(selected);
+    }
+
+    private static String fallbackFromCell(CellGrid cellGrid, int rowIndex, int columnIndex) {
+        if (rowIndex < 0 || columnIndex < 0 || rowIndex >= cellGrid.rowCount || columnIndex >= cellGrid.colCount) {
+            return "";
+        }
+        Cell cell = cellGrid.cellByRowCol[rowIndex][columnIndex];
+        if (cell == null) {
+            return "";
+        }
+        return cell.getText(columnIndex);
     }
 
     private static int safeIndex(Integer index) {
