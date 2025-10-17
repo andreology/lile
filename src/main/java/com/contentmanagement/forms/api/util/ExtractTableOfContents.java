@@ -778,6 +778,45 @@ public final class ExtractTableOfContents {
         }
     }
 
+    private static final class RowCluster {
+        final double anchor;
+        final List<Rect> rects = new ArrayList<>();
+
+        RowCluster(double anchor) {
+            this.anchor = anchor;
+        }
+
+        void add(Rect rect) {
+            rects.add(rect);
+        }
+    }
+
+    private static final class Span {
+        double left;
+        double right;
+
+        Span(double left, double right) {
+            this.left = Math.min(left, right);
+            this.right = Math.max(left, right);
+        }
+
+        double width() {
+            return Math.max(0.0, right - left);
+        }
+    }
+
+    private static final class ColumnSpanIndices {
+        final int start;
+        final int end;
+        final int fallback;
+
+        ColumnSpanIndices(int start, int end, int fallback) {
+            this.start = start;
+            this.end = end;
+            this.fallback = fallback;
+        }
+    }
+
     private static final class CheckboxSlice {
         final Cell cell;
         final boolean checked;
@@ -823,36 +862,12 @@ public final class ExtractTableOfContents {
             double minY = Double.MAX_VALUE;
             double maxX = Double.MIN_VALUE;
             double maxY = Double.MIN_VALUE;
-            double[] heights = new double[rects.size()];
-            double[] widths = new double[rects.size()];
-            List<Double> rowEdges = new ArrayList<>();
-            List<Double> colEdges = new ArrayList<>();
-
-            for (int i = 0; i < rects.size(); i++) {
-                Rect rect = rects.get(i);
-                heights[i] = rect.height;
-                widths[i] = rect.width;
-                double top = rect.y;
-                double bottom = rect.y + rect.height;
-                double left = rect.x;
-                double right = rect.x + rect.width;
-                rowEdges.add(top);
-                rowEdges.add(bottom);
-                colEdges.add(left);
-                colEdges.add(right);
-                minX = Math.min(minX, left);
-                minY = Math.min(minY, top);
-                maxX = Math.max(maxX, right);
-                maxY = Math.max(maxY, bottom);
+            for (Rect rect : rects) {
+                minX = Math.min(minX, rect.x);
+                minY = Math.min(minY, rect.y);
+                maxX = Math.max(maxX, rect.x + rect.width);
+                maxY = Math.max(maxY, rect.y + rect.height);
             }
-
-            double medianHeight = median(heights);
-            double medianWidth = median(widths);
-            double rowTolerance = Math.max(MIN_EDGE_TOLERANCE, medianHeight * EDGE_TOLERANCE_FACTOR);
-            double colTolerance = Math.max(MIN_EDGE_TOLERANCE, medianWidth * EDGE_TOLERANCE_FACTOR);
-
-            double[] rowBoundaries = clusterEdges(rowEdges, rowTolerance, minY, maxY);
-            double[] colBoundaries = clusterEdges(colEdges, colTolerance, minX, maxX);
 
             Rect bounds = new Rect(
                 (int) Math.floor(minX),
@@ -861,30 +876,236 @@ public final class ExtractTableOfContents {
                 (int) Math.ceil(Math.max(1.0, maxY - minY))
             );
 
-            int rowCount = Math.max(0, rowBoundaries.length - 1);
-            int colCount = Math.max(0, colBoundaries.length - 1);
+            int expectedColumns = ColumnType.values().length;
+
+            List<RowCluster> clusters = clusterRows(rects, 4.0);
+            List<Span> headerSpans = buildHeaderSpans(clusters, expectedColumns, minX, maxX);
+            if (headerSpans == null || headerSpans.size() != expectedColumns) {
+                // fall back to a simple equal partition if header detection fails
+                headerSpans = buildFallbackSpans(expectedColumns, minX, maxX);
+            }
+
+            double[] colEdges = new double[headerSpans.size() + 1];
+            for (int i = 0; i < headerSpans.size(); i++) {
+                if (i == 0) {
+                    colEdges[0] = headerSpans.get(0).left;
+                }
+                colEdges[i + 1] = headerSpans.get(i).right;
+            }
+
+            List<Double> rowEdgeList = new ArrayList<>();
+            for (Rect rect : rects) {
+                addEdge(rowEdgeList, rect.y);
+                addEdge(rowEdgeList, rect.y + rect.height);
+            }
+            Collections.sort(rowEdgeList);
+            double[] rowEdges = new double[rowEdgeList.size()];
+            for (int i = 0; i < rowEdgeList.size(); i++) {
+                rowEdges[i] = rowEdgeList.get(i);
+            }
+
+            int rowCount = Math.max(0, rowEdges.length - 1);
+            int colCount = headerSpans.size();
             Cell[][] matrix = new Cell[rowCount][colCount];
             List<Cell> cells = new ArrayList<>();
-            Set<Cell> seen = Collections.newSetFromMap(new IdentityHashMap<>());
 
             for (Rect rect : rects) {
-                int rowStart = locateInterval(rowBoundaries, rect.y + 1e-3);
-                int rowEnd = locateInterval(rowBoundaries, rect.y + rect.height - 1e-3);
-                int colStart = locateInterval(colBoundaries, rect.x + 1e-3);
-                int colEnd = locateInterval(colBoundaries, rect.x + rect.width - 1e-3);
+                int rowStart = findRowIndex(rowEdges, rect.y);
+                int rowEnd = findRowIndex(rowEdges, rect.y + rect.height - 1e-3);
+                ColumnSpanIndices columnIndices = findColumnSpan(headerSpans, rect.x, rect.x + rect.width);
+                int colStart = columnIndices.start;
+                int colEnd = columnIndices.end;
+                if (colStart < 0) {
+                    colStart = colEnd = columnIndices.fallback;
+                }
+                colStart = Math.max(0, Math.min(colStart, colCount - 1));
+                colEnd = Math.max(colStart, Math.min(colEnd, colCount - 1));
+                rowStart = Math.max(0, Math.min(rowStart, rowCount - 1));
+                rowEnd = Math.max(rowStart, Math.min(rowEnd, rowCount - 1));
 
                 Cell cell = new Cell(rect, rowStart, rowEnd, colStart, colEnd);
                 cells.add(cell);
                 for (int r = rowStart; r <= rowEnd; r++) {
                     for (int c = colStart; c <= colEnd; c++) {
-                        if (r >= 0 && r < rowCount && c >= 0 && c < colCount) {
-                            matrix[r][c] = cell;
-                        }
+                        matrix[r][c] = cell;
                     }
                 }
             }
 
-            return new TableGrid(rowBoundaries, colBoundaries, bounds, matrix, cells);
+            return new TableGrid(rowEdges, colEdges, bounds, matrix, cells);
+        }
+
+        private static List<RowCluster> clusterRows(List<Rect> rects, double tolerance) {
+            List<RowCluster> clusters = new ArrayList<>();
+            for (Rect rect : rects) {
+                boolean assigned = false;
+                for (RowCluster cluster : clusters) {
+                    if (Math.abs(cluster.anchor - rect.y) <= tolerance) {
+                        cluster.add(rect);
+                        assigned = true;
+                        break;
+                    }
+                }
+                if (!assigned) {
+                    RowCluster cluster = new RowCluster(rect.y);
+                    cluster.add(rect);
+                    clusters.add(cluster);
+                }
+            }
+            clusters.sort(Comparator.comparingDouble(c -> c.anchor));
+            return clusters;
+        }
+
+        private static List<Span> buildHeaderSpans(List<RowCluster> clusters,
+                                                   int expectedColumns,
+                                                   double minX,
+                                                   double maxX) {
+            RowCluster headerCluster = null;
+            for (RowCluster cluster : clusters) {
+                if (headerCluster == null || cluster.rects.size() > headerCluster.rects.size()) {
+                    headerCluster = cluster;
+                }
+            }
+            if (headerCluster == null || headerCluster.rects.isEmpty()) {
+                return null;
+            }
+
+            List<Span> spans = new ArrayList<>();
+            for (Rect rect : headerCluster.rects) {
+                spans.add(new Span(rect.x, rect.x + rect.width));
+            }
+            spans.sort(Comparator.comparingDouble(span -> span.left));
+            if (spans.isEmpty()) {
+                return null;
+            }
+
+            while (spans.size() > expectedColumns) {
+                mergeClosestSpans(spans);
+            }
+            while (spans.size() < expectedColumns) {
+                if (!splitWidestSpan(spans)) {
+                    break;
+                }
+            }
+
+            if (spans.size() != expectedColumns) {
+                return null;
+            }
+
+            // ensure spans are within table bounds
+            spans.get(0).left = Math.min(spans.get(0).left, minX);
+            spans.get(spans.size() - 1).right = Math.max(spans.get(spans.size() - 1).right, maxX);
+            return spans;
+        }
+
+        private static List<Span> buildFallbackSpans(int expectedColumns,
+                                                     double minX,
+                                                     double maxX) {
+            List<Span> spans = new ArrayList<>();
+            double width = Math.max(1.0, (maxX - minX) / expectedColumns);
+            double current = minX;
+            for (int i = 0; i < expectedColumns; i++) {
+                double left = current;
+                double right = (i == expectedColumns - 1) ? maxX : current + width;
+                spans.add(new Span(left, right));
+                current = right;
+            }
+            return spans;
+        }
+
+        private static void mergeClosestSpans(List<Span> spans) {
+            if (spans.size() <= 1) {
+                return;
+            }
+            int mergeIndex = 0;
+            double bestGap = Double.MAX_VALUE;
+            for (int i = 0; i < spans.size() - 1; i++) {
+                double gap = Math.abs(spans.get(i + 1).left - spans.get(i).right);
+                if (gap < bestGap) {
+                    bestGap = gap;
+                    mergeIndex = i;
+                }
+            }
+            Span merged = new Span(spans.get(mergeIndex).left,
+                Math.max(spans.get(mergeIndex).right, spans.get(mergeIndex + 1).right));
+            spans.set(mergeIndex, merged);
+            spans.remove(mergeIndex + 1);
+        }
+
+        private static boolean splitWidestSpan(List<Span> spans) {
+            if (spans.isEmpty()) {
+                return false;
+            }
+            int widestIndex = 0;
+            double widestWidth = spans.get(0).width();
+            for (int i = 1; i < spans.size(); i++) {
+                double width = spans.get(i).width();
+                if (width > widestWidth) {
+                    widestWidth = width;
+                    widestIndex = i;
+                }
+            }
+            if (widestWidth < 2.0) {
+                return false;
+            }
+            Span widest = spans.get(widestIndex);
+            double mid = (widest.left + widest.right) / 2.0;
+            Span first = new Span(widest.left, mid);
+            Span second = new Span(mid, widest.right);
+            spans.set(widestIndex, first);
+            spans.add(widestIndex + 1, second);
+            return true;
+        }
+
+        private static void addEdge(List<Double> edges, double value) {
+            for (int i = 0; i < edges.size(); i++) {
+                double existing = edges.get(i);
+                if (Math.abs(existing - value) <= 2.0) {
+                    edges.set(i, (existing + value) / 2.0);
+                    return;
+                }
+            }
+            edges.add(value);
+        }
+
+        private static int findRowIndex(double[] edges, double value) {
+            for (int i = 0; i < edges.length - 1; i++) {
+                if (value >= edges[i] - 2.0 && value <= edges[i + 1] + 2.0) {
+                    return i;
+                }
+            }
+            if (value < edges[0]) {
+                return 0;
+            }
+            return edges.length - 2;
+        }
+
+        private static ColumnSpanIndices findColumnSpan(List<Span> spans,
+                                                         double left,
+                                                         double right) {
+            int start = -1;
+            int end = -1;
+            double bestOverlap = -1;
+            int fallback = 0;
+            for (int i = 0; i < spans.size(); i++) {
+                Span span = spans.get(i);
+                double overlap = Math.max(0.0, Math.min(right, span.right) - Math.max(left, span.left));
+                double minRequired = Math.min(right - left, span.width()) * 0.25;
+                if (overlap >= minRequired || overlap >= 1.0) {
+                    if (start == -1) {
+                        start = i;
+                    }
+                    end = i;
+                }
+                double spanCenter = (span.left + span.right) / 2.0;
+                double rectCenter = (left + right) / 2.0;
+                double distance = Math.abs(rectCenter - spanCenter);
+                if (bestOverlap < 0 || distance < bestOverlap) {
+                    bestOverlap = distance;
+                    fallback = i;
+                }
+            }
+            return new ColumnSpanIndices(start, end, fallback);
         }
 
         private TableGrid(double[] rowEdges,
