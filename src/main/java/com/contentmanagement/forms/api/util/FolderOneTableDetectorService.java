@@ -6,7 +6,6 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -23,7 +22,7 @@ import org.apache.pdfbox.text.TextPosition;
 public class FolderOneTableDetectorService {
 
     private static final Pattern HEADER_PATTERN = Pattern.compile(
-        "DELIVERY PACKAGE CONTENT\\s+FOLDER\\s+(?:1|I(?![IVXLCDM]))"
+        "DELIVERYPACKAGECONTENT.*FOLDER(?:1|I(?![IVXLCDM]))"
     );
 
     /**
@@ -47,7 +46,7 @@ public class FolderOneTableDetectorService {
 
         int headerIndex = -1;
         for (int i = 0; i < rows.size(); i++) {
-            String rowText = rows.get(i).normalizedText();
+            String rowText = rows.get(i).collapsedText();
             if (HEADER_PATTERN.matcher(rowText).find()) {
                 headerIndex = i;
                 break;
@@ -57,20 +56,17 @@ public class FolderOneTableDetectorService {
             return false;
         }
 
-        Set<String> required = new HashSet<>();
-        required.add("CHECK");
-        required.add("INCLUDED");
-        required.add("TAB");
-        required.add("DOCUMENT");
-        required.add("FORM");
-        required.add("NUMBER");
-        required.add("DELIVERY");
-        required.add("REQUIREMENT");
-
-        Set<String> seen = new LinkedHashSet<>();
-        for (int i = headerIndex + 1; i < rows.size() && i <= headerIndex + 6; i++) {
-            seen.addAll(rows.get(i).normalizedWords());
-            if (seen.containsAll(required)) {
+        StringBuilder collapsedWindow = new StringBuilder();
+        for (int i = headerIndex + 1; i < rows.size() && i <= headerIndex + 8; i++) {
+            Row row = rows.get(i);
+            collapsedWindow.append(row.collapsedText());
+            String collapsed = collapsedWindow.toString();
+            boolean hasCheck = collapsed.contains("CHECKIFINCLUDED");
+            boolean hasForm = collapsed.contains("FORMNUMBER");
+            boolean hasDelivery = collapsed.contains("DELIVERYREQUIREMENT");
+            boolean hasTabWord = collapsed.contains("TABDOCUMENT") || collapsed.contains("TABFORM");
+            boolean hasDocumentWord = collapsed.contains("DOCUMENT");
+            if (hasCheck && hasForm && hasDelivery && hasTabWord && hasDocumentWord) {
                 return true;
             }
         }
@@ -114,6 +110,7 @@ public class FolderOneTableDetectorService {
         String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
         normalized = normalized.toUpperCase(Locale.ROOT);
         normalized = normalized.replaceAll("[^A-Z0-9]+", " ").trim();
+        normalized = normalized.replaceAll("\\s+", " ");
         return normalized;
     }
 
@@ -181,6 +178,11 @@ public class FolderOneTableDetectorService {
 
         String normalizedText() {
             return normalizeText(rawText());
+        }
+
+        String collapsedText() {
+            String normalized = normalizedText();
+            return normalized.replace(" ", "");
         }
 
         Set<String> normalizedWords() {
