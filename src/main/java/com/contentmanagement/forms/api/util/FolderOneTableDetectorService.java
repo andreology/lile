@@ -33,9 +33,6 @@ public final class FolderOneTableDetectorService {
         {"delivery", "requirement"}
     };
 
-    private static final String[] TITLE_I_TOKENS = {"delivery", "package", "content", "folder", "i"};
-    private static final String[] TITLE_III_TOKENS = {"delivery", "package", "content", "folder", "iii"};
-
     private static final Set<String> BODY_VOCABULARY = Set.of(
         "schedule", "exhibit", "series", "recorded", "original", "electronic", "copy"
     );
@@ -65,8 +62,8 @@ public final class FolderOneTableDetectorService {
         Set<String> tokens = tokensFrom(normalized);
 
         int headerCoverage = headerCoverage(tokens);
-        boolean titleI = hasAll(tokens, TITLE_I_TOKENS);
-        boolean titleIII = hasAll(tokens, TITLE_III_TOKENS);
+        boolean titleI = normalized.contains("delivery package content folder i");
+        boolean titleIII = normalized.contains("delivery package content folder iii");
         int formHits = Math.min(countRegex(pageText, FORM_NUMBER_PATTERN), 6);
         int bodyHits = Math.min(countVocabulary(tokens), 6);
         int score = 3 * (titleI ? 1 : 0)
