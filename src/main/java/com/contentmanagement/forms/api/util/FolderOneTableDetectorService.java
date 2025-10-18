@@ -1,224 +1,177 @@
 package com.contentmanagement.forms.api.util;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.text.Normalizer;
-import java.util.ArrayList;
-import java.util.Comparator;
+import java.util.Collections;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
-import org.apache.pdfbox.text.TextPosition;
 
 /**
- * Service that inspects a PDF page and determines if it contains the
- * "Delivery Package Content (Folder I/1)" table of contents.
+ * Detects the page range that contains the “Delivery Package Content (Folder I)” table of contents.
+ * <p>
+ * The detector analyses one page at a time, normalises the extracted text, and evaluates a collection
+ * of lightweight heuristics derived from the table’s header and body vocabulary. No positional
+ * assumptions or colour cues are required, making the detector resilient to OCR quirks.
  */
-public class FolderOneTableDetectorService {
+public final class FolderOneTableDetectorService {
 
-    private static final Pattern HEADER_PATTERN = Pattern.compile(
-        "DELIVERYPACKAGECONTENT.*FOLDER(?:1|I(?![IVXLCDM]))"
+    private static final Logger LOGGER = Logger.getLogger(FolderOneTableDetectorService.class.getName());
+
+    private static final String[][] HEADER_GROUPS = {
+        {"check", "if", "included"},
+        {"tab"},
+        {"document"},
+        {"form", "number"},
+        {"delivery", "requirement"}
+    };
+
+    private static final String[] TITLE_I_TOKENS = {"delivery", "package", "content", "folder", "i"};
+    private static final String[] TITLE_III_TOKENS = {"delivery", "package", "content", "folder", "iii"};
+
+    private static final Set<String> BODY_VOCABULARY = Set.of(
+        "schedule", "exhibit", "series", "recorded", "original", "electronic", "copy"
     );
 
+    private static final Pattern FORM_NUMBER_PATTERN = Pattern.compile("\\b6\\d{3}\\b");
+
+    private FolderOneTableDetectorService() {
+        // no instances
+    }
+
     /**
-     * Determines whether the given page contains the Folder I table of contents.
+     * Evaluates whether the specified page contains the Folder I table of contents.
      *
-     * @param document  the PDF document (must not be {@code null})
+     * @param document  the PDF document (not closed by this method)
      * @param pageIndex zero-based page index
-     * @return {@code true} if the page contains the target table header and column headings
-     * @throws IllegalArgumentException if the page index is out of bounds
+     * @return {@code true} if the page satisfies the Folder I heuristics, {@code false} otherwise
+     * @throws IOException if PDF text extraction fails
      */
-    public boolean containsTarget(PDDocument document, int pageIndex) {
+    public static boolean containsTarget(PDDocument document, int pageIndex) throws IOException {
         Objects.requireNonNull(document, "document is required");
         if (pageIndex < 0 || pageIndex >= document.getNumberOfPages()) {
             throw new IllegalArgumentException("pageIndex out of bounds: " + pageIndex);
         }
 
-        List<Row> rows = extractRows(document, pageIndex);
-        if (rows.isEmpty()) {
+        String pageText = extractPageText(document, pageIndex);
+        String normalized = normalize(pageText);
+        Set<String> tokens = tokensFrom(normalized);
+
+        int headerCoverage = headerCoverage(tokens);
+        boolean titleI = hasAll(tokens, TITLE_I_TOKENS);
+        boolean titleIII = hasAll(tokens, TITLE_III_TOKENS);
+        int formHits = Math.min(countRegex(pageText, FORM_NUMBER_PATTERN), 6);
+        int bodyHits = Math.min(countVocabulary(tokens), 6);
+        int score = 3 * (titleI ? 1 : 0)
+            + 2 * Math.min(headerCoverage, 5)
+            + formHits
+            + bodyHits;
+
+        LOGGER.log(Level.FINE,
+            () -> String.format(
+                "Page %d metrics -> header=%d titleI=%s titleIII=%s formHits=%d bodyHits=%d score=%d",
+                pageIndex, headerCoverage, titleI, titleIII, formHits, bodyHits, score));
+
+        if (titleIII) {
             return false;
         }
 
-        int headerIndex = -1;
-        for (int i = 0; i < rows.size(); i++) {
-            String rowText = rows.get(i).collapsedText();
-            if (HEADER_PATTERN.matcher(rowText).find()) {
-                headerIndex = i;
-                break;
+        boolean strongHeader = headerCoverage >= 3;
+        boolean strongForms = formHits >= 2;
+        boolean strongScore = score >= 9;
+
+        return titleI || (strongHeader && strongForms) || strongScore;
+    }
+
+    private static int headerCoverage(Set<String> tokens) {
+        int coverage = 0;
+        for (String[] group : HEADER_GROUPS) {
+            if (hasAll(tokens, group)) {
+                coverage++;
             }
         }
-        if (headerIndex < 0) {
-            return false;
-        }
+        return coverage;
+    }
 
-        StringBuilder collapsedWindow = new StringBuilder();
-        for (int i = headerIndex + 1; i < rows.size() && i <= headerIndex + 8; i++) {
-            Row row = rows.get(i);
-            collapsedWindow.append(row.collapsedText());
-            String collapsed = collapsedWindow.toString();
-            boolean hasCheck = collapsed.contains("CHECKIFINCLUDED");
-            boolean hasForm = collapsed.contains("FORMNUMBER");
-            boolean hasDelivery = collapsed.contains("DELIVERYREQUIREMENT");
-            boolean hasTabWord = collapsed.contains("TABDOCUMENT") || collapsed.contains("TABFORM");
-            boolean hasDocumentWord = collapsed.contains("DOCUMENT");
-            if (hasCheck && hasForm && hasDelivery && hasTabWord && hasDocumentWord) {
+    private static int countVocabulary(Set<String> tokens) {
+        int hits = 0;
+        for (String vocab : BODY_VOCABULARY) {
+            if (tokens.contains(vocab)) {
+                hits++;
+            }
+        }
+        return hits;
+    }
+
+    private static String extractPageText(PDDocument document, int pageIndex) throws IOException {
+        PDFTextStripper stripper = new PDFTextStripper();
+        stripper.setSortByPosition(true);
+        stripper.setStartPage(pageIndex + 1);
+        stripper.setEndPage(pageIndex + 1);
+        return stripper.getText(document);
+    }
+
+    private static String normalize(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return "";
+        }
+        String normalized = raw.toLowerCase(Locale.ROOT);
+        normalized = Normalizer.normalize(normalized, Normalizer.Form.NFKC);
+        normalized = normalized.replaceAll("[^a-z]+", " ");
+        normalized = normalized.replaceAll("\\s+", " ");
+        return normalized.trim();
+    }
+
+    private static Set<String> tokensFrom(String normalized) {
+        if (normalized.isEmpty()) {
+            return Collections.emptySet();
+        }
+        String[] parts = normalized.split(" ");
+        Set<String> set = new HashSet<>(parts.length * 2);
+        for (String part : parts) {
+            if (part.isEmpty()) {
+                continue;
+            }
+            set.add(part);
+            if (part.length() > 1 && part.endsWith("s")) {
+                set.add(part.substring(0, part.length() - 1));
+            }
+        }
+        return set;
+    }
+
+    private static boolean hasAll(Set<String> tokens, String... words) {
+        for (String word : words) {
+            if (!tokens.contains(word)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasAny(Set<String> tokens, String... words) {
+        for (String word : words) {
+            if (tokens.contains(word)) {
                 return true;
             }
         }
         return false;
     }
 
-    private List<Row> extractRows(PDDocument document, int pageIndex) {
-        try {
-            PositionCollectingStripper stripper = new PositionCollectingStripper();
-            List<TextChunk> chunks = stripper.extract(document, pageIndex);
-            if (chunks.isEmpty()) {
-                return List.of();
-            }
-            chunks.sort(Comparator
-                .comparingDouble(TextChunk::getY).reversed()
-                .thenComparingDouble(TextChunk::getX));
-
-            List<Row> rows = new ArrayList<>();
-            for (TextChunk chunk : chunks) {
-                if (chunk.text().trim().isEmpty()) {
-                    continue;
-                }
-                Row current = rows.isEmpty() ? null : rows.get(rows.size() - 1);
-                if (current == null || !current.accepts(chunk)) {
-                    Row newRow = new Row(chunk);
-                    rows.add(newRow);
-                } else {
-                    current.add(chunk);
-                }
-            }
-            return rows;
-        } catch (IOException e) {
-            throw new UncheckedIOException("Unable to extract text from page " + pageIndex, e);
+    private static int countRegex(String raw, Pattern pattern) {
+        Matcher matcher = pattern.matcher(raw);
+        int count = 0;
+        while (matcher.find()) {
+            count++;
         }
+        return count;
     }
 
-    private static String normalizeText(String text) {
-        if (text == null || text.isEmpty()) {
-            return "";
-        }
-        String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
-        normalized = normalized.toUpperCase(Locale.ROOT);
-        normalized = normalized.replaceAll("[^A-Z0-9]+", " ").trim();
-        normalized = normalized.replaceAll("\\s+", " ");
-        return normalized;
-    }
-
-    private static final class PositionCollectingStripper extends PDFTextStripper {
-
-        private final List<TextChunk> chunks = new ArrayList<>();
-
-        PositionCollectingStripper() throws IOException {
-            setSortByPosition(true);
-        }
-
-        List<TextChunk> extract(PDDocument document, int pageIndex) throws IOException {
-            chunks.clear();
-            setStartPage(pageIndex + 1);
-            setEndPage(pageIndex + 1);
-            getText(document);
-            return new ArrayList<>(chunks);
-        }
-
-        @Override
-        protected void writeString(String string, List<TextPosition> textPositions) throws IOException {
-            for (TextPosition position : textPositions) {
-                String unicode = position.getUnicode();
-                if (unicode == null || unicode.trim().isEmpty()) {
-                    continue;
-                }
-                double x = position.getXDirAdj();
-                double y = position.getYDirAdj();
-                double height = position.getHeightDir();
-                double width = position.getWidthDirAdj();
-                chunks.add(new TextChunk(unicode, x, y, width, height));
-            }
-        }
-    }
-
-    private record TextChunk(String text, double x, double y, double width, double height) {
-        double endX() {
-            return x + width;
-        }
-    }
-
-    private static final class Row {
-        private final List<TextChunk> chunks = new ArrayList<>();
-        private double baseline;
-        private double avgHeight;
-
-        Row(TextChunk chunk) {
-            add(chunk);
-        }
-
-        boolean accepts(TextChunk chunk) {
-            double tolerance = Math.max(avgHeight * 0.6, 3.0);
-            return Math.abs(chunk.y() - baseline) <= tolerance;
-        }
-
-        void add(TextChunk chunk) {
-            chunks.add(chunk);
-            baseline = (baseline * (chunks.size() - 1) + chunk.y()) / chunks.size();
-            avgHeight = (avgHeight * (chunks.size() - 1) + chunk.height()) / chunks.size();
-        }
-
-        double getBaseline() {
-            return baseline;
-        }
-
-        String normalizedText() {
-            return normalizeText(rawText());
-        }
-
-        String collapsedText() {
-            String normalized = normalizedText();
-            return normalized.replace(" ", "");
-        }
-
-        Set<String> normalizedWords() {
-            String normalized = normalizedText();
-            if (normalized.isEmpty()) {
-                return Set.of();
-            }
-            String[] parts = normalized.split(" ");
-            Set<String> words = new HashSet<>();
-            for (String part : parts) {
-                if (!part.isBlank()) {
-                    words.add(part);
-                }
-            }
-            return words;
-        }
-
-        private String rawText() {
-            if (chunks.isEmpty()) {
-                return "";
-            }
-            chunks.sort(Comparator.comparingDouble(TextChunk::x));
-            StringBuilder sb = new StringBuilder();
-            TextChunk previous = null;
-            for (TextChunk chunk : chunks) {
-                if (previous != null) {
-                    double gap = chunk.x() - previous.endX();
-                    double threshold = Math.max(2.0, previous.height() * 0.5);
-                    if (gap > threshold) {
-                        sb.append(' ');
-                    }
-                }
-                sb.append(chunk.text());
-                previous = chunk;
-            }
-            return sb.toString();
-        }
-    }
 }
